@@ -53,6 +53,7 @@ def create_config():
 config = create_config()
 simulation_parameters = create_example_parameters(config.test_system)
 n_buses = config.test_system
+n_gens = simulation_parameters['general']['n_gbus']
 
 # limits
 sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float() 
@@ -66,9 +67,8 @@ sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torc
 pg_max = (sg_max.T @ map_g)[:, :n_buses]
 qg_max = (sg_max.T @ map_g)[:, n_buses:]
 pg_min = torch.zeros_like(pg_max)
-qg_min = torch.zeros_like(qg_max)
+qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float32) @ map_g[:n_gens, :n_buses]  / 100
 
-n_gens = simulation_parameters['general']['n_gbus']
 
 pg_max_zero_mask = simulation_parameters['true_system']['Sg_max'][:n_gens] < 1e-9
 gen_mask_to_keep = ~pg_max_zero_mask  # invert mask to keep desired generators
