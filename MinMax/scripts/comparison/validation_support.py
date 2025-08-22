@@ -1403,7 +1403,7 @@ def print_violations_comparison_table(
 
     # --- Step 2: Combine all Series into a single DataFrame ---
     comparison_df = pd.concat(all_series, axis=1)
-    comparison_df.index.name = 'Violation Metric'
+    comparison_df.index.name = 'Violation Metric [pu]'
 
     # --- NEW: Step to save the DataFrame to a CSV file ---
     try:
