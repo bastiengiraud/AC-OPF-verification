@@ -88,6 +88,7 @@ def _limit_tensor(simulation_parameters):
     
     pg_max = simulation_parameters['true_system']['Sg_max'][:n_gens] / 100
     qg_max = simulation_parameters['true_system']['Sg_max'][n_gens:] / 100
+    qg_min = simulation_parameters['true_system']['qg_min'] / 100
     vm_max = simulation_parameters['true_system']['Volt_max']
     vn_min = simulation_parameters['true_system']['Volt_min']
     I_max = simulation_parameters['true_system']['I_max_pu']
@@ -95,6 +96,7 @@ def _limit_tensor(simulation_parameters):
     return {
         'pg_max': torch.tensor(pg_max, dtype=torch.float32),
         'qg_max': torch.tensor(qg_max, dtype=torch.float32),
+        'qg_min': torch.tensor(qg_min.T, dtype=torch.float32),
         'vm_max': torch.tensor(vm_max, dtype=torch.float32),
         'vm_min': torch.tensor(vn_min, dtype=torch.float32),
         'I_max': torch.tensor(I_max, dtype=torch.float32),
@@ -124,12 +126,18 @@ def calculate_violations(solution_data, simulation_parameters):
     
     # Initialize the results dictionary
     violations = {
-        'pg_avg_violation': torch.tensor(0.0),
-        'pg_max_violation': torch.tensor(0.0),
-        'qg_avg_violation': torch.tensor(0.0),
-        'qg_max_violation': torch.tensor(0.0),
-        'vm_avg_violation': torch.tensor(0.0),
-        'vm_max_violation': torch.tensor(0.0),
+        'pg_up_avg_violation': torch.tensor(0.0),
+        'pg_up_max_violation': torch.tensor(0.0),
+        'pg_down_avg_violation': torch.tensor(0.0),
+        'pg_down_max_violation': torch.tensor(0.0),
+        'qg_up_avg_violation': torch.tensor(0.0),
+        'qg_up_max_violation': torch.tensor(0.0),
+        'qg_down_avg_violation': torch.tensor(0.0),
+        'qg_down_max_violation': torch.tensor(0.0),
+        'vm_up_avg_violation': torch.tensor(0.0),
+        'vm_up_max_violation': torch.tensor(0.0),
+        'vm_down_avg_violation': torch.tensor(0.0),
+        'vm_down_max_violation': torch.tensor(0.0),
         'Ibr_avg_violation': torch.tensor(0.0),
         'Ibr_max_violation': torch.tensor(0.0),
         'Ibal_avg_violation': torch.tensor(0.0), # New key for current balance
@@ -140,17 +148,26 @@ def calculate_violations(solution_data, simulation_parameters):
     pg_actual = solution_data['pg_tot']
     pg_max_expanded = limits['pg_max']
     pg_upper_violation = torch.relu(pg_actual - pg_max_expanded)
+    pg_lower_violation = torch.relu(-pg_actual)
     
-    violations['pg_avg_violation'] = torch.mean(pg_upper_violation)
-    violations['pg_max_violation'] = torch.max(pg_upper_violation)
+    violations['pg_up_avg_violation'] = torch.mean(pg_upper_violation)
+    violations['pg_up_max_violation'] = torch.max(pg_upper_violation)
+    
+    violations['pg_down_avg_violation'] = torch.mean(pg_lower_violation)
+    violations['pg_down_max_violation'] = torch.max(pg_lower_violation)
     
     # --- 2. Generator Reactive Power (Qg) Violation ---
     qg_actual = solution_data['qg_tot']
     qg_max_expanded = limits['qg_max']
+    qg_min_expanded = limits['qg_min']
     qg_upper_violation = torch.relu(qg_actual - qg_max_expanded)
+    qg_lower_violation = torch.relu(qg_min_expanded - qg_actual)
     
-    violations['qg_avg_violation'] = torch.mean(qg_upper_violation)
-    violations['qg_max_violation'] = torch.max(qg_upper_violation)
+    violations['qg_up_avg_violation'] = torch.mean(qg_upper_violation)
+    violations['qg_up_max_violation'] = torch.max(qg_upper_violation)
+    
+    violations['qg_down_avg_violation'] = torch.mean(qg_lower_violation)
+    violations['qg_down_max_violation'] = torch.max(qg_lower_violation)
     
     # --- 3. Voltage Magnitude (Vm) Violation ---
     vm_actual = solution_data['vm_tot']
@@ -160,10 +177,14 @@ def calculate_violations(solution_data, simulation_parameters):
     vm_upper_violation = torch.relu(vm_actual - vm_max_expanded)
     vm_lower_violation = torch.relu(vm_min_expanded - vm_actual)
     
-    vm_total_violation = vm_upper_violation + vm_lower_violation
+    vm_up_violation = vm_upper_violation 
+    vm_down_violation = vm_lower_violation
     
-    violations['vm_avg_violation'] = torch.mean(vm_total_violation)
-    violations['vm_max_violation'] = torch.max(vm_total_violation)
+    violations['vm_up_avg_violation'] = torch.mean(vm_up_violation)
+    violations['vm_up_max_violation'] = torch.max(vm_up_violation)
+    
+    violations['vm_down_avg_violation'] = torch.mean(vm_down_violation)
+    violations['vm_down_max_violation'] = torch.max(vm_down_violation)
     
     # --- 4. Branch Current Magnitude (Ibr) Violation ---
     I_from_r = solution_data['Ibr_from_r_tot']
@@ -1359,12 +1380,18 @@ def print_violations_comparison_table(
         # Extract violation values, converting tensors to scalar items
         # and creating more readable metric names for the table.
         violation_values = {
-            'Pg Avg Violation': violations_dict['pg_avg_violation'].item(),
-            'Pg Max Violation': violations_dict['pg_max_violation'].item(),
-            'Qg Avg Violation': violations_dict['qg_avg_violation'].item(),
-            'Qg Max Violation': violations_dict['qg_max_violation'].item(),
-            'Vm Avg Violation': violations_dict['vm_avg_violation'].item(),
-            'Vm Max Violation': violations_dict['vm_max_violation'].item(),
+            'Pg up Avg Violation': violations_dict['pg_up_avg_violation'].item(),
+            'Pg up Max Violation': violations_dict['pg_up_max_violation'].item(),
+            'Pg down Avg Violation': violations_dict['pg_down_avg_violation'].item(),
+            'Pg down Max Violation': violations_dict['pg_down_max_violation'].item(),
+            'Qg up Avg Violation': violations_dict['qg_up_avg_violation'].item(),
+            'Qg up Max Violation': violations_dict['qg_up_max_violation'].item(),
+            'Qg down Avg Violation': violations_dict['qg_down_avg_violation'].item(),
+            'Qg down Max Violation': violations_dict['qg_down_max_violation'].item(),
+            'Vm up Avg Violation': violations_dict['vm_up_avg_violation'].item(),
+            'Vm up Max Violation': violations_dict['vm_up_max_violation'].item(),
+            'Vm down Avg Violation': violations_dict['vm_down_avg_violation'].item(),
+            'Vm down Max Violation': violations_dict['vm_down_max_violation'].item(),
             'Ibr Avg Violation': violations_dict['Ibr_avg_violation'].item(),
             'Ibr Max Violation': violations_dict['Ibr_max_violation'].item(),
             'Ibal Avg Violation': violations_dict['Ibal_avg_violation'].item(),
@@ -1401,9 +1428,9 @@ def print_violations_comparison_table(
     # --- Step 3: Custom Ordering and Printing for Nicer Table ---
     # Define the desired groups and their display order
     metric_groups_display = [
-        ("Generator Pg Violations", ['Pg Avg Violation', 'Pg Max Violation']),
-        ("Generator Qg Violations", ['Qg Avg Violation', 'Qg Max Violation']),
-        ("Bus Voltage Violations", ['Vm Avg Violation', 'Vm Max Violation']),
+        ("Generator Pg Violations", ['Pg up Avg Violation', 'Pg up Max Violation', 'Pg down Avg Violation', 'Pg down Max Violation']),
+        ("Generator Qg Violations", ['Qg up Avg Violation', 'Qg up Max Violation', 'Qg down Avg Violation', 'Qg down Max Violation']),
+        ("Bus Voltage Violations", ['Vm up Avg Violation', 'Vm up Max Violation', 'Vm down Avg Violation', 'Vm down Max Violation']),
         ("Branch Current Violations", ['Ibr Avg Violation', 'Ibr Max Violation']),
         ("Nodal Current Balance Violations", ['Ibal Avg Violation', 'Ibal Max Violation']),
     ]
