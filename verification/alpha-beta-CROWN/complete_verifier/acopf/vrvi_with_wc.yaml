@@ -1,0 +1,40 @@
+# Example for using customized model and data loader.
+# Model and data loader defined in custom_model_data.py
+# python abcrown.py --config exp_configs/tutorial_examples/custom_box_data_example.yaml
+general:
+  complete_verifier: bab
+  save_adv_example: true
+  # enable_incomplete_verification: True ###### added
+model:
+  # Use the two_relu_toy_model() model in "custom_model_data.py".
+  name: Customized("load_model_ac", "load_weights")
+  input_shape: [-1, 198]
+general:
+  device: cpu
+#data:
+  # Use the simple_box_data() loader in "custom_model_data.py".
+  #dataset: Customized("custom_model_data", "dense_pf_box")
+  #num_outputs: 510
+specification:
+  vnnlib_path: ./acopf/vrvi_with_wc.vnnlib
+  #norm: .inf  # Linf norm (can also be 2 or 1).
+  #epsilon: 0.01
+attack:  # Currently attack is only implemented for Linf norm.
+  pgd_steps: 100  # Increase for a stronger attack. A PGD attack will be used before verification to filter on non-robust data examples.
+  pgd_restarts: 30  # Increase for a stronger attack.
+solver:
+  batch_size: 2048  # Number of subdomains to compute in parallel in bound solver. Decrease if you run out of memory.
+  alpha-crown:
+    iteration: 1000   # Number of iterations for alpha-CROWN optimization. Alpha-CROWN is used to compute all intermediate layer bounds before branch and bound starts.
+    lr_alpha: 0.1    # Learning rate for alpha in alpha-CROWN. The default (0.1) is typically ok.
+  beta-crown:
+    lr_alpha: 0.01  # Learning rate for optimizing the alpha parameters, the default (0.01) is typically ok, but you can try to tune this parameter to get better lower bound.
+    lr_beta: 0.05  # Learning rate for optimizing the beta parameters, the default (0.05) is typically ok, but you can try to tune this parameter to get better lower bound.
+    iteration: 1000 #20  # Number of iterations for beta-CROWN optimization. 20 is often sufficient, 50 or 100 can also be used.
+    #all_node_split_LP: True
+bab:
+  timeout: 50000  # Timeout threshold for branch and bound. Increase for verifying more points.
+  branching:  # Parameters for branching heuristics.
+    reduceop: min  # Reduction function for the branching heuristic scores, min or max. Using max can be better on some models.
+    method: kfsb  # babsr is fast but less accurate; fsb is slow but most accurate; kfsb is usually a balance.
+    candidates: 3  # Number of candidates to consider in fsb and kfsb. More leads to slower but better branching. 3 is typically good enough.
