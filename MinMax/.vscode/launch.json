@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python-jl: Run Validation Script", // A clear name for your configuration
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/comparison/validation.py", // Specify your main script
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "python": "/home/bagir/miniconda3/envs/ab-crown-old/bin/python-jl", // Your python-jl executable
+            "cwd": "${workspaceFolder}" // Set the working directory to the project root
+        }
+    ]
+}

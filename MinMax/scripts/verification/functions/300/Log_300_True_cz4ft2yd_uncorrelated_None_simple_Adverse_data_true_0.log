@@ -1,0 +1,108 @@
+
+Gurobi 12.0.2 (linux64) logging started Tue Jul  1 15:54:35 2025
+
+Set parameter LogFile to value "/home/bagir/Documents/1) Projects/2) AC verification/MinMax/scripts/verification/functions/300/Log_300_True_cz4ft2yd_uncorrelated_None_simple_Adverse_data_true_0.log"
+Gurobi Optimizer version 12.0.2 build v12.0.2rc0 (linux64 - "Ubuntu 22.04.5 LTS")
+
+CPU model: 13th Gen Intel(R) Core(TM) i7-1355U, instruction set [SSE2|AVX|AVX2]
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+
+Non-default parameters:
+TimeLimit  3600
+MIPGap  0.01
+
+Optimize a model with 1434 rows, 1248 columns and 20461 nonzeros
+Model fingerprint: 0x0af9ea43
+Variable types: 984 continuous, 264 integer (264 binary)
+Coefficient statistics:
+  Matrix range     [3e-07, 1e+05]
+  Objective range  [2e-01, 2e+03]
+  Bounds range     [1e-01, 1e+05]
+  RHS range        [2e-04, 1e+05]
+
+User MIP start 0 produced solution with objective -23002.4 (0.09s)
+Loaded user MIP start 0 with objective -23002.4
+User MIP start 1 did not produce a new incumbent solution
+User MIP start 2 did not produce a new incumbent solution
+User MIP start 3 did not produce a new incumbent solution
+User MIP start 4 did not produce a new incumbent solution
+User MIP start 5 did not produce a new incumbent solution
+User MIP start 6 did not produce a new incumbent solution
+User MIP start 7 did not produce a new incumbent solution
+User MIP start 8 did not produce a new incumbent solution
+User MIP start 9 did not produce a new incumbent solution
+User MIP start 10 did not produce a new incumbent solution
+User MIP start 11 did not produce a new incumbent solution
+User MIP start 12 did not produce a new incumbent solution
+User MIP start 13 did not produce a new incumbent solution
+User MIP start 14 did not produce a new incumbent solution
+User MIP start 15 did not produce a new incumbent solution
+User MIP start 16 did not produce a new incumbent solution
+User MIP start 17 did not produce a new incumbent solution
+User MIP start 18 did not produce a new incumbent solution
+User MIP start 19 did not produce a new incumbent solution
+User MIP start 20 did not produce a new incumbent solution
+User MIP start 21 did not produce a new incumbent solution
+User MIP start 22 did not produce a new incumbent solution
+User MIP start 23 did not produce a new incumbent solution
+User MIP start 24 did not produce a new incumbent solution
+User MIP start 25 did not produce a new incumbent solution
+User MIP start 26 did not produce a new incumbent solution
+User MIP start 27 did not produce a new incumbent solution
+User MIP start 28 did not produce a new incumbent solution
+User MIP start 29 did not produce a new incumbent solution
+User MIP start 30 produced solution with objective -23017.9 (2.32s)
+Loaded user MIP start 30 with objective -23017.9
+User MIP start 31 did not produce a new incumbent solution
+User MIP start 32 did not produce a new incumbent solution
+User MIP start 33 did not produce a new incumbent solution
+User MIP start 34 did not produce a new incumbent solution
+User MIP start 35 did not produce a new incumbent solution
+User MIP start 36 did not produce a new incumbent solution
+User MIP start 37 did not produce a new incumbent solution
+User MIP start 38 did not produce a new incumbent solution
+User MIP start 39 did not produce a new incumbent solution
+User MIP start 40 did not produce a new incumbent solution
+User MIP start 41 did not produce a new incumbent solution
+User MIP start 42 did not produce a new incumbent solution
+User MIP start 43 did not produce a new incumbent solution
+User MIP start 44 did not produce a new incumbent solution
+User MIP start 45 did not produce a new incumbent solution
+User MIP start 46 did not produce a new incumbent solution
+User MIP start 47 did not produce a new incumbent solution
+User MIP start 48 did not produce a new incumbent solution
+User MIP start 49 did not produce a new incumbent solution
+Processed 50 MIP starts in 3.88 seconds (2.99 work units)
+
+Presolve removed 438 rows and 344 columns
+Presolve time: 0.09s
+Presolved: 996 rows, 904 columns, 19834 nonzeros
+Variable types: 655 continuous, 249 integer (249 binary)
+
+Root relaxation: objective -2.365439e+04, 656 iterations, 0.03 seconds (0.04 work units)
+
+    Nodes    |    Current Node    |     Objective Bounds      |     Work
+ Expl Unexpl |  Obj  Depth IntInf | Incumbent    BestBd   Gap | It/Node Time
+
+     0     0 -23654.393    0   41 -23017.857 -23654.393  2.77%     -    4s
+     0     0 -23650.554    0   42 -23017.857 -23650.554  2.75%     -    4s
+     0     0 -23650.542    0   40 -23017.857 -23650.542  2.75%     -    4s
+     0     0 -23650.348    0   40 -23017.857 -23650.348  2.75%     -    4s
+     0     0 -23650.348    0   40 -23017.857 -23650.348  2.75%     -    4s
+     0     2 -23650.348    0   40 -23017.857 -23650.348  2.75%     -    5s
+H  675   557                    -23031.24137 -23650.219  2.69%   120    8s
+  1411  1195 -23262.463   89   40 -23031.241 -23649.475  2.68%  98.4   11s
+  1892  1477 -23542.908   34   43 -23031.241 -23649.475  2.68%   107   15s
+
+Cutting planes:
+  MIR: 6
+  Flow cover: 4
+  RLT: 21
+
+Explored 1971 nodes (218034 simplex iterations) in 17.56 seconds (17.72 work units)
+Thread count was 12 (of 12 available processors)
+
+Solution count 3: -23031.2 -23017.9 -23002.4 
+
+Solve interrupted
+Best objective -2.303124137243e+04, best bound -2.364947473839e+04, gap 2.6843%

@@ -1,0 +1,5 @@
+# ignore large files in data folders
+data/ac_opf_data/
+data/dc_opf_data/
+wandb/
+shell/
