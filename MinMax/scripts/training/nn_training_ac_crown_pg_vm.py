@@ -33,6 +33,7 @@ def to_np(x):
     return x.detach().numpy()
 
 def train(config):
+    print("This is config: ", config)
     n_buses = config.test_system
     simulation_parameters = create_example_parameters(n_buses)
     simulation_parameters['nn_output'] = 'pg_vm'
@@ -56,13 +57,13 @@ def train(config):
     # generator min max
     pg_max_zero_mask = simulation_parameters['true_system']['Sg_max'][:n_gens] < 1e-9
     gen_mask_to_keep = ~pg_max_zero_mask  # invert mask to keep desired generators
-    gen_delta = (torch.tensor(simulation_parameters['true_system']['Sg_delta'][:n_gens]).float().to(device)).unsqueeze(1)[gen_mask_to_keep] / 100
+    gen_delta = torch.tensor(simulation_parameters['true_system']['Sg_delta'][:n_gens][gen_mask_to_keep]).float().to(device).unsqueeze(1) / 100
     gen_min = torch.zeros_like(gen_delta)
     
     # output limits
     map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32, device=Gen_train.device)
     sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=Gen_train.device)
-    pg_max = sg_max[:n_gens, :][gen_mask_to_keep] / 100 # (sg_max.T @ map_g)[:, :n_buses]
+    pg_max = sg_max[:n_gens, :][gen_mask_to_keep.squeeze()] / 100 # (sg_max.T @ map_g)[:, :n_buses]
     qg_max = (sg_max.T @ map_g)[:, n_buses:]
     vmag_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float().to(device)
     
@@ -73,9 +74,22 @@ def train(config):
     
     output_min = torch.vstack((gen_min, volt_min))
     output_delta = torch.vstack((gen_delta, volt_delta))
+    num_gen_nn = len(gen_delta)
     
     dem_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float().to(device)
     dem_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float().to(device) / 100
+    
+    # sampling bounds
+    lower_bound_factor = 0.6
+    upper_bound_factor = 1.0
+    
+    # Calculate the new, consistent bounds for verification
+    p_max = dem_min + dem_delta
+    
+    # scaling factors
+    sd_min_train_data = lower_bound_factor * p_max
+    sd_delta_train_data = (upper_bound_factor - lower_bound_factor) * p_max
+    sd_delta_train_data[sd_delta_train_data <= 1e-12] = 1.0
     
     print(f"This is sd_train max and min: {Dem_train.max()}, {Dem_train.min()}")
     print(f"This is vrvi_train max and min: {Gen_train.max()}, {Gen_train.min()}")
@@ -83,8 +97,8 @@ def train(config):
     data_stat = {
         'gen_min': output_min,
         'gen_delta': output_delta,
-        'dem_min': dem_min,
-        'dem_delta': dem_delta,
+        'dem_min': sd_min_train_data,
+        'dem_delta': sd_delta_train_data,
     }
     
     print(f"These are the scaling factors, gen_delta.max(): {data_stat['gen_delta'].max()}, dem_delta.max(): {data_stat['dem_delta'].max()}")
@@ -102,10 +116,21 @@ def train(config):
     lirpa_model = BoundedModule(network_gen, torch.empty_like(Dem_train), device=device) 
     print('Running on', device)
 
-    x = dem_min.reshape(1, -1) + dem_delta.reshape(1, -1) / 2
-    x = torch.tensor(x).float().to(device)
-    x_min = torch.tensor(dem_min.reshape(1, -1)).float().to(device)
-    x_max = torch.tensor(dem_min.reshape(1, -1) + dem_delta.reshape(1, -1)).float().to(device)
+    # x = dem_min.reshape(1, -1) + dem_delta.reshape(1, -1) / 2
+    # x = torch.tensor(x).float().to(device)
+    # x_min = torch.tensor(dem_min.reshape(1, -1)).float().to(device)
+    # x_max = torch.tensor(dem_min.reshape(1, -1) + dem_delta.reshape(1, -1)).float().to(device)
+    
+    # Apply the factors to the nominal load to get the correct min and max for the CROWN input space. 
+    x_min = lower_bound_factor * p_max
+    x_max = upper_bound_factor * p_max
+        
+    # Reshape and convert to float tensors for CROWN
+    x_min = x_min.reshape(1, -1).clone().detach().float()
+    x_max = x_max.reshape(1, -1).clone().detach().float()
+
+    # Calculate the center of the new interval
+    x = (x_min + x_max) / 2
     
     # set up input specificiation. Define upper and lower bound. Boundedtensor wraps nominal input(x) and associates it with defined perturbation ptb.
     ptb = PerturbationLpNorm(x_L=x_min, x_U=x_max)
@@ -117,7 +142,7 @@ def train(config):
     model_save_directory = os.path.join(project_root_dir, 'models', 'best_model')
     path = f'checkpoint_{n_buses}_{config.hidden_layer_size}_{config.Algo}_{simulation_parameters["nn_output"]}_final.pt'
     path_dir = os.path.join(model_save_directory, path)
-    early_stopping = EarlyStopping(patience=200, verbose=False, NN_input=Dem_train, path=path_dir)
+    early_stopping = EarlyStopping(patience=500, verbose=False, NN_input=Dem_train, path=path_dir)
     
     train_losses = []
     test_losses = []
@@ -161,17 +186,21 @@ def train(config):
 
         train_losses.append(training_loss.item())
         test_losses.append(validation_loss.item())
-        if config.sweep == False:
+        start_early_stop = 500
+        if config.sweep == False and epoch > start_early_stop:
+            if config.epochs == 1000 and start_early_stop != 500:
+                raise ValueError("If training for 1000 epochs, start_early_stop should be 500")
+            # only apply early stopping after weight pruning and if you're not sweeping hyperparameters
             early_stopping(validation_loss, network_gen)
 
         # after 100 epochs, start adding wc PF violation penalty
         if config.Algo and epoch >= 50:
             loss_weight = config.LPF_weight / (1 + epoch * 0.01)
             lb, ub = lirpa_model.compute_bounds(x=(image,), method=config.abc_method) 
-            lb_pg = lb[:, :18]
-            ub_pg = ub[:, :18]
-            lb_vg = lb[:, 18:]
-            ub_vg = ub[:, 18:]
+            lb_pg = lb[:, :num_gen_nn]
+            ub_pg = ub[:, :num_gen_nn]
+            lb_vg = lb[:, num_gen_nn:]
+            ub_vg = ub[:, num_gen_nn:]
             
             upper_gen_violation = torch.relu(ub_pg - pg_max)
             lower_gen_violation = torch.relu(-lb_pg)

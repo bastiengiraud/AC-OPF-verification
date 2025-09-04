@@ -33,6 +33,7 @@ def to_np(x):
     return x.detach().numpy()
 
 def train(config):
+    print("This is config: ", config)
     n_buses = config.test_system
     simulation_parameters = create_example_parameters(n_buses)
     simulation_parameters['nn_output'] = 'vr_vi'
@@ -43,19 +44,22 @@ def train(config):
     simulation_parameters_gens['nn_output'] = 'pg_vm'
     act_gen_indices = simulation_parameters['true_system']['pg_active']
     num_act_gens = len(act_gen_indices)
+    n_gens = simulation_parameters['general']['n_gbus']
     _, pgvm_train = create_data(simulation_parameters=simulation_parameters_gens)
     pgvm_train = torch.tensor(pgvm_train[:, :num_act_gens]).float().to(device)
 
     # Training Data
     sd_train, vrvi_train = create_data(simulation_parameters=simulation_parameters)
     sd_train = torch.tensor(sd_train).float().to(device)
+    n_loads = sd_train.shape[1] // 2
     vrvi_train = torch.tensor(vrvi_train).float().to(device)
     vrvi_train_typ = torch.ones(vrvi_train.shape[0], 1).to(device)
     
     map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32, device=vrvi_train.device)
-    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=vrvi_train.device)
+    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=vrvi_train.device) / 100
     pg_max = (sg_max.T @ map_g)[:, :n_buses]
     qg_max = (sg_max.T @ map_g)[:, n_buses:]
+    qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float32) @ map_g[n_gens:, n_buses:] / 100
 
     num_classes = vrvi_train.shape[1]
     sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float().to(device)
@@ -68,6 +72,18 @@ def train(config):
     # vrvi_min = -vrvi_max
     # vrvi_delta = vrvi_max - vrvi_min
     # vrvi_delta[vrvi_delta <= 1e-12] = 1.0
+    
+    # sampling bounds
+    lower_bound_factor = 0.6
+    upper_bound_factor = 1.0
+    
+    # Calculate the new, consistent bounds for verification
+    p_max = sd_min + sd_delta
+    
+    # scaling factors
+    sd_min_train_data = lower_bound_factor * p_max
+    sd_delta_train_data = (upper_bound_factor - lower_bound_factor) * p_max
+    sd_delta_train_data[sd_delta_train_data <= 1e-12] = 1.0
     
     # Compute stats for real and imaginary parts
     vr_train = vrvi_train[:, :n_buses]
@@ -88,12 +104,12 @@ def train(config):
     vrvi_min = torch.cat([vr_min, vi_min], dim=0)
     vrvi_delta = torch.cat([vr_delta, vi_delta], dim=0)
     
-    print(f"This is sd_train max and min: {sd_train.max()}, {sd_train.min()}")
+    print(f"This is sd_train max and min: {sd_delta_train_data.max()}, {sd_min_train_data.min()}")
     print(f"This is vrvi_train max and min: {vrvi_train.max()}, {vrvi_train.min()}")
 
     data_stat = {
-        'sd_min': sd_min,
-        'sd_delta': sd_delta,
+        'sd_min': sd_min_train_data,
+        'sd_delta': sd_delta_train_data,
         'vrvi_min': vrvi_min,
         'vrvi_delta': vrvi_delta,
     }
@@ -118,10 +134,21 @@ def train(config):
     
     print('Running on', device)
 
-    x = sd_min.reshape(1, -1) + sd_delta.reshape(1, -1) / 2
-    x = x.clone().detach().float().to(device)
-    x_min = torch.tensor(sd_min.reshape(1, -1)).float().to(device)
-    x_max = torch.tensor(sd_min.reshape(1, -1) + sd_delta.reshape(1, -1)).float().to(device)
+    # Apply the factors to the nominal load to get the correct min and max for the CROWN input space. 
+    x_min = lower_bound_factor * p_max
+    x_max = upper_bound_factor * p_max
+        
+    # Reshape and convert to float tensors for CROWN
+    x_min = x_min.reshape(1, -1).clone().detach().float()
+    x_max = x_max.reshape(1, -1).clone().detach().float()
+
+    # Calculate the center of the new interval
+    x = (x_min + x_max) / 2
+
+    # x = sd_min.reshape(1, -1) + sd_delta.reshape(1, -1) / 2
+    # x = x.clone().detach().float().to(device)
+    # x_min = torch.tensor(sd_min.reshape(1, -1)).float().to(device)
+    # x_max = torch.tensor(sd_min.reshape(1, -1) + sd_delta.reshape(1, -1)).float().to(device)
     
     # set up input specificiation. Define upper and lower bound. Boundedtensor wraps nominal input(x) and associates it with defined perturbation ptb.
     ptb = PerturbationLpNorm(x_L=x_min, x_U=x_max)
@@ -133,7 +160,7 @@ def train(config):
     model_save_directory = os.path.join(project_root_dir, 'models', 'best_model')
     path = f'checkpoint_{n_buses}_{config.hidden_layer_size}_{config.Algo}_{simulation_parameters["nn_output"]}_final.pt'
     path_dir = os.path.join(model_save_directory, path)
-    early_stopping = EarlyStopping(patience=200, verbose=False, NN_input=sd_train, path=path_dir)
+    early_stopping = EarlyStopping(patience=500, verbose=False, NN_input=sd_train, path=path_dir)
     
     train_losses = []
     test_losses = []
@@ -146,6 +173,7 @@ def train(config):
 
 
     for epoch in range(config.epochs):
+
         # after every 100 epochs, enrich dataset with worst-case data
         if epoch % 100 == 0 and epoch != 0 and config.Enrich:
             X_new, Y_new, typ_new = wc_enriching(network_gen, config, sd_train, data_stat, simulation_parameters)
@@ -164,30 +192,33 @@ def train(config):
         pg_target = pg_total[idx]
 
         start_time = time.time()
-        mse_criterion, training_loss = train_epoch(network_gen, InputNN, OutputNN, typNN, pg_target, optimizer, config, simulation_parameters, epoch)
+        mse_criterion, training_loss = train_epoch(network_gen, InputNN, OutputNN, typNN, pg_target, optimizer, config, simulation_parameters, epoch) 
         validation_loss = validate_epoch(network_gen, sd_test, vrvi_test)
-        training_time = time.time() - start_time
+        training_time = time.time() - start_time    
         
+        # log the results
         wandb.log({
             "epoch": epoch,
             "training_loss": training_loss,
             "validation_loss": validation_loss,
             "mse_criterion": mse_criterion,
         })
-        
+            
         if epoch % 20 == 0 and epoch != 0:
             # Print MSE losses for both train and validation
             current_sparsity_val, current_total_params = calculate_current_sparsity(network_gen)
             print(f"Epoch {epoch}/{config.epochs} — Train total loss: {training_loss:.6f}, Train MSE: {mse_criterion:.6f}, Validation MSE: {validation_loss:.6f}")
 
-
         train_losses.append(mse_criterion.item())
         test_losses.append(validation_loss.item())
-        if config.sweep == False:
+        start_early_stop = 500
+        if config.sweep == False and epoch > start_early_stop:
+            if config.epochs == 1000 and start_early_stop != 500:
+                raise ValueError("If training for 1000 epochs, start_early_stop should be 500")
+            # only apply early stopping after weight pruning and if you're not sweeping hyperparameters
             early_stopping(validation_loss, network_gen)
+            
         
-        
-
         # after 100 epochs, start adding wc violation penalty
         if config.Algo and epoch >= 50:
             
@@ -205,8 +236,8 @@ def train(config):
             imag_up_violation = torch.relu(ub_iu - imag_max_tot) # get actual current ratings
             imag_violation = (torch.abs(imag_up_violation ** 2).mean())
             
-            # placeholder gen violation
             gen_violation_loss = 0
+            inj_violation = 0
             
             if epoch % 20 == 0:
                 print(f"Average worst-case current mag: {ub_iu.mean():.4f}")
@@ -230,7 +261,7 @@ def train(config):
                 lb_qg, _ = lirpa_qgl.compute_bounds(x=(image,), method=config.abc_method)
                 
                 upper_gen_violation = torch.relu(torch.stack([ub_pg - pg_max, ub_qg - qg_max], dim=0))
-                lower_gen_violation = torch.relu(torch.stack([-lb_pg, -lb_qg], dim=0))
+                lower_gen_violation = torch.relu(torch.stack([-lb_pg, qg_min - lb_qg], dim=0))
                 gen_violation_loss = (torch.mean(upper_gen_violation) + torch.mean(lower_gen_violation)) 
                 
                 # crown bounds on KCL current injections
@@ -248,20 +279,19 @@ def train(config):
                     print(f"Average worst-case violation inj real: {worst_case_inj_real.mean():.4f}")
                     print(f"Average worst-case violation inj imag: {worst_case_inj_imag.mean():.4f}")
                         
-    
             # combine
-            wc_violation = vmag_violation + imag_violation  + gen_violation_loss + inj_violation # + vrect_violation
+            optimizer.zero_grad()
+            wc_violation = vmag_violation + imag_violation + gen_violation_loss + inj_violation # + vrect_violation
+            pf_loss = loss_weight * wc_violation
+            pf_loss.backward()
+            optimizer.step()
             
             if epoch % 20 == 0 and epoch != 0:
                 print(f"Epoch {epoch}/{config.epochs} — WC violation loss: {wc_violation:.6f}")
 
             
-            optimizer.zero_grad()
-            pf_loss = loss_weight * wc_violation 
-            pf_loss.backward()
-            optimizer.step()
             
-            
+        if config.Algo and epoch >= 50:
             if epoch > 300 - 1:
                 """ 
                 The tightness of mccormick depends on the voltage and current bounds. Add w/c penalties after some epochs.
@@ -511,6 +541,7 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, pg_target, optimizer, co
     n_loads = sd_train.shape[1] // 2
     n_bus = simulation_parameters['general']['n_buses']
     n_lines = simulation_parameters['true_system']['n_line']
+    n_gens = simulation_parameters['general']['n_gbus']
     f_bus = torch.tensor(simulation_parameters['true_system']['fbus'], dtype=torch.float32, device=vrvi_train.device)
     t_bus = torch.tensor(simulation_parameters['true_system']['tbus'], dtype=torch.float32, device=vrvi_train.device)
     # act_gen_indices = simulation_parameters['true_system']['pg_active']
@@ -543,10 +574,11 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, pg_target, optimizer, co
     kcl_to_im = -torch.relu(-kcl_im) # +1 at to-bus, 0 elsewhere
     
     # generator capacity
-    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=vrvi_train.device)
+    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=vrvi_train.device) / 100
     pg_max = (sg_max.T @ map_g)[:, :n_bus]
     qg_max = (sg_max.T @ map_g)[:, n_bus:]
-    
+    qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float32) @ map_g[n_gens:, n_bus:] / 100
+
     # Initialize lists to accumulate current magnitudes for epoch-level metrics
     epoch_I_mag_surrogate = []
     epoch_I_mag_amb = []
@@ -622,7 +654,7 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, pg_target, optimizer, co
             qg = qinj + torch.einsum('bi,ij->bj', qd, map_l[n_loads:, n_bus:])
             
             upper_gen_violation = RELU(torch.stack([pg - pg_max, qg - qg_max], dim=0))
-            lower_gen_violation = RELU(torch.stack([-pg, -qg], dim=0))
+            lower_gen_violation = RELU(torch.stack([-pg, qg_min - qg], dim=0))
             
             pg_pred = pg[:, pv_buses_nz]
             

@@ -14,17 +14,17 @@ from ac_opf.create_example_parameters import create_example_parameters
 from types import SimpleNamespace
 
 
-def create_config(nn_type):
+def create_config(test_system):
     
     # ------- vr vi ------------
     parameters_dict = {
         'sweep': True,
-        'test_system': 118,
-        'hidden_layer_size': 50,
+        'test_system': test_system,
+        'hidden_layer_size': 25,
         'n_hidden_layers': 3,
         'epochs': 1000,
-        'batch_size': 50,
-        'learning_rate': 1e-3,
+        'batch_size': 25,
+        'learning_rate': 5e-4,
         'lr_decay': 0.97,
         'dataset_split_seed': 10,
         'pytorch_init_seed': 3,
@@ -40,6 +40,19 @@ def create_config(nn_type):
         'abc_method': 'backward', # "CROWN", "Dynamic-Forward", CROWN-Optimized, IBP, alpha-CROWN, backward
     }
     
+    if test_system == 14:
+        parameters_dict['hidden_layer_size'] = 15
+        parameters_dict['learning_rate'] = 2e-4
+        parameters_dict['batch_size'] = 15
+    elif test_system == 57:
+        parameters_dict['learning_rate'] = 5e-4
+        parameters_dict['hidden_layer_size'] = 25
+        parameters_dict['batch_size'] = 25
+    elif test_system == 118:
+        parameters_dict['learning_rate'] = 10e-4
+        parameters_dict['hidden_layer_size'] = 50
+        parameters_dict['batch_size'] = 50
+    
     config = SimpleNamespace(**parameters_dict)
     return config
 
@@ -54,14 +67,14 @@ sweep_config = {
     },
     # 'tags': ["NN-Voltage", "v1.0"],
     'parameters': {
-        'batch_size': {
-            'values': [25, 50, 75, 100] # A few discrete batch sizes to try
-        },
-        'learning_rate': {
-            'distribution': 'log_uniform_values',
-            'min': 1e-4,
-            'max': 1e-2
-        },
+        # 'batch_size': {
+        #     'values': [25, 50, 75, 100] # A few discrete batch sizes to try
+        # },
+        # 'learning_rate': {
+        #     'distribution': 'log_uniform_values',
+        #     'min': 1e-4,
+        #     'max': 1e-2
+        # },
         # 'epochs': {
         #     'value': 700 # A fixed value that is not being tuned
         # },
@@ -84,7 +97,7 @@ sweep_config = {
         'crit_weight': {
             'distribution': 'log_uniform_values',
             'min': 1e0,
-            'max': 1e4
+            'max': 1e3
         },
         'kcl_weight': {
             'distribution': 'log_uniform_values',
@@ -103,20 +116,20 @@ sweep_config = {
 
 
 # --- Step 2: The Training Function for the W&B Agent ---
-def train_for_sweep():
+def train_for_sweep(test_system):
     """
     This function will be called by the W&B agent for each trial.
     It gets its configuration from the sweep automatically.
     """
     # Create the base config first
     nn_type = 'vr_vi'
-    base_config = create_config(nn_type)
+    base_config = create_config(test_system)
 
     with wandb.init(
         project="ac_verif_nn_training",
         group=f"sys_{base_config.test_system}_{nn_type}_Algo_{base_config.Algo}",
     ) as run:
-        run.name=f"sys_{base_config.test_system}_{nn_type}_Algo_{base_config.Algo}_sweep_lr_{wandb.config.learning_rate:.6f}_bs_{wandb.config.batch_size}"
+        run.name=f"sys_{base_config.test_system}_{nn_type}_Algo_{base_config.Algo}_sweep_lr_{base_config.learning_rate:.4f}"
         
         # Then, update the base config with the sweep's chosen values.
         # This merges the two sets of parameters.
@@ -144,20 +157,22 @@ def train_for_sweep():
         train(config=config)
         
 # --- Step 3: Launch the Sweep ---
-def main_hyperparameter_tuning():
+def main_hyperparameter_tuning(test_system):
     """The main entry point to start the hyperparameter tuning sweep."""
     
     # Create the sweep in the W&B server and get its ID
     sweep_id = wandb.sweep(sweep_config, project="ac_verif_nn_training")
     
     # Run the agent to execute trials
-    wandb.agent(sweep_id, function=train_for_sweep, count=20)
+    wandb.agent(sweep_id, function=lambda: train_for_sweep(test_system), count=10)
 
     
 # --------------------------------------------
 
 
 if __name__ == '__main__':
+    systems = [57] # [57, 118]
     # if hyperparameter tuning
-    main_hyperparameter_tuning()
+    for system in systems:
+        main_hyperparameter_tuning(system)
     

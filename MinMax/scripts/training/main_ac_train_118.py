@@ -60,25 +60,25 @@ def create_config(nn_type: str, algo: bool) -> SimpleNamespace:
     # Define a default set of parameters to be overwritten by Excel
     parameters_dict = {
         'sweep': False,
-        'test_system': 57,
-        'hidden_layer_size': 25,
+        'test_system': 118,
+        'hidden_layer_size': 50,
         'n_hidden_layers': 3,
         'epochs': 1000,
-        'batch_size': 25,
-        'learning_rate': 0.005, # 57: 5e-4, 118: 1e-3
+        'batch_size': 50,
+        'learning_rate': 1e-3, # 57: 5e-4, 118: 1e-3
         'lr_decay': 0.97,
         'dataset_split_seed': 10,
         'pytorch_init_seed': 3,
-        'pg_viol_weight': 1e0,
-        'qg_viol_weight': 1e0,
-        'vm_viol_weight': 1e0,
+        'pg_viol_weight': 0.0,
+        'qg_viol_weight': 0.0,
+        'vm_viol_weight': 0.0,
         'line_viol_weight': 1e0,
-        'crit_weight': 1e3,
-        'crit_volt_weight': 1e3,
-        'crit_pg_weight': 1e3,
+        'crit_weight': 0.0,
+        'crit_volt_weight': 0.0,
+        'crit_pg_weight': 0.0,
         'PF_weight': 1e0,
-        'kcl_weight': 1e0,
-        'LPF_weight': 1e0,
+        'kcl_weight': 0.0,
+        'LPF_weight': 0.0,
         'N_enrich': 50,
         'Algo': algo,
         'Enrich': False,
@@ -90,11 +90,7 @@ def create_config(nn_type: str, algo: bool) -> SimpleNamespace:
     excel_file_path = os.path.join(dir_name, 'sweep_weights.xlsx')
     n_buses = parameters_dict['test_system'] # Or whatever your test_system is
     
-    if n_buses == 14:
-        parameters_dict['hidden_layer_size'] = 15
-        parameters_dict['learning_rate'] = 2e-4
-        parameters_dict['batch_size'] = 15
-    elif n_buses == 57:
+    if n_buses == 57:
         parameters_dict['hidden_layer_size'] = 25
         parameters_dict['learning_rate'] = 5e-4
         parameters_dict['batch_size'] = 25

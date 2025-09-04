@@ -6,6 +6,7 @@ using InfrastructureModels # Needed for _guard_objective_value, _guard_objective
 using JSON
 const _PM = PowerModels # Alias for convenience, as used in your example
 import PandaModels as _PdM # Assuming this alias is already here
+# using Gurobi
 
 
 # You will also need a wrapper function for this new build method, similar to solve_projection_opf

@@ -5,8 +5,7 @@ import torch
 from tqdm import tqdm
 import pandas as pd
 import json
-
-import torch
+import time
 import torch.nn as nn
 
 import pandapower.networks as pn
@@ -57,6 +56,7 @@ sys.path.insert(0, ROOT_DIR)
 
 for subdir in ['data', 'models', 'scripts/utils', 'config']:
     sys.path.insert(0, os.path.join(ROOT_DIR, subdir))
+    
 
 
 def _initialize_result_tensors(n_bus: int, n_gens: int, n_branches: int, n_data_points: int) -> dict:
@@ -339,6 +339,7 @@ def _filter_generator_data(gen_data_tensor: torch.Tensor, ppc_bus_data: np.ndarr
     return gen_data_tensor[gen_mask_to_keep, :]
 
 
+
 def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     """
     Solves multiple AC Optimal Power Flow (OPF) problems for a given case
@@ -361,6 +362,8 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
 
     # Determine case name based on the number of buses
     case_name_map = {
+        14: 'pglib_opf_case14_ieee.m',
+        57: 'pglib_opf_case57_ieee.m',
         118: 'pglib_opf_case118_ieee.m',
         300: 'pglib_opf_case300_ieee.m',
         793: 'pglib_opf_case793_goc.m',
@@ -405,7 +408,7 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     ub_factor = 1.0 * np.ones(loads_nominal.shape[0])
 
     # Generate load scaling factors
-    np.random.seed(42)  # Set seed for reproducibility
+    np.random.seed(41)  # Set seed for reproducibility
     X_factors = ls.kumaraswamymontecarlo(1.6, 2.8, 0.75, lb_factor, ub_factor, n_data_points)
 
     # Calculate actual load values for each data point (MW/Mvar)
@@ -420,6 +423,7 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
 
     # --- Initialize Output Tensors ---
     result_tensors = _initialize_result_tensors(n_bus, n_gens, n_branches, n_data_points)
+    timing_tensor = torch.zeros(n_data_points, dtype=torch.float32)
 
     # --- PYPOWER OPF Setup ---
     ppopt = ppoption(OUT_ALL=0) # Suppress verbose output from PYPOWER
@@ -430,17 +434,59 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
 
     # Get the internal PYPOWER case from the pandapower network
     initial_ppc = base_ppc.copy()  # Make a copy of the initial PPC for modification
+    initial_net = copy.deepcopy(net)
 
     # 1. Create a map from external bus ID (from .m file) to its row index in base_ppc['bus']
     external_to_ppc_row_idx = {
         int(bus_data[BUS_I]): idx for idx, bus_data in enumerate(initial_ppc['bus'])
     }
     
+    # ============ WARM-UP RUN ================
+    # This first run initializes the Julia environment and compiles the code,
+    # removing overhead from the timed loop below.
+    print("Running a warm-up OPF solve to initialize Julia/PyCall...")
+    try:
+        # Use a generic initial network for the warm-up
+        _, _ = runpm_opf(initial_net, pm_solver='ipopt')
+        print("Warm-up complete. Starting timed data generation loop.")
+    except Exception as e:
+        print(f"Warning: Warm-up OPF failed. This may indicate a problem with the initial case. Error: {e}")
+        
+    # ============ stupid fix, for now doing OPFs first for time ================
+    print(f"Solving {n_data_points} AC-OPF problems with PYPOWER...")
+    for entry in tqdm(range(n_data_points), position=0, leave=True):
+        
+        #----------------- for pandamodels------------
+        current_net = copy.deepcopy(initial_net) # Deep copy the net for each iteration
+        
+        # Adjust loads in the current_net using pandapower syntax
+        # for load_idx_pp, bus_idx_pp_external in current_net.load['bus'].items():
+        #     current_net.load.loc[load_idx_pp, 'p_mw'] = pd_tot_mw_data[load_idx_pp, entry]
+        #     current_net.load.loc[load_idx_pp, 'q_mvar'] = qd_tot_mvar_data[load_idx_pp, entry]
+        
+        current_net.load['p_mw'] = pd_tot_mw_data[:, entry]
+        current_net.load['q_mvar'] = qd_tot_mvar_data[:, entry]
+
+            
+        solved_net, results_pm = None, None
+        
+        # Run the OPF for timing
+        try:           
+            # ------------- with pandamodels ------------
+            solved_net, results_pm = runpm_opf(current_net, pm_solver='ipopt')
+            
+        except Exception as e:
+            print(f"Warning: PYPOWER OPF failed for entry {entry}. Error: {e}. Storing zeros.")
+            success = False # Explicitly set to False if an exception occurs
+            
+        timing_tensor[entry] = results_pm['solve_time']
+    
     # ============ Data Generation Loop (using PYPOWER) ================
     print(f"Solving {n_data_points} AC-OPF problems with PYPOWER...")
     for entry in tqdm(range(n_data_points), position=0, leave=True):
         current_ppc = copy.deepcopy(initial_ppc) # Make a deep copy for each iteration
-        
+            
+        # ---------------- for pypower ------------------
         # Adjust loads in the current_ppc
         for load_idx_pp, bus_idx_pp_external in net.load['bus'].items():
             # bus_idx_pp_external is the original bus ID from the .m file
@@ -456,14 +502,21 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
             # Adjust loads
             current_ppc['bus'][ppc_bus_row_idx, PD] = pd_tot_mw_data[load_idx_pp, entry] # / Sbase (if you want pu)
             current_ppc['bus'][ppc_bus_row_idx, QD] = qd_tot_mvar_data[load_idx_pp, entry] # / Sbase (if you want pu)
-
+        
+        # --- Time the OPF solve ---
+        start_time = time.perf_counter()
+        
         # Run the OPF with PYPOWER
         try:
+            # -------------- with pypower -------------
             results = runopf(current_ppc, ppopt)
             success = (results['success'] == 1)
+            
         except Exception as e:
             print(f"Warning: PYPOWER OPF failed for entry {entry}. Error: {e}. Storing zeros.")
             success = False # Explicitly set to False if an exception occurs
+            
+        end_time = time.perf_counter()
         
         # Store results or zeros if OPF did not converge/failed
         if success:
@@ -481,9 +534,9 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         'nn_input': X_nn_input, 
         'pd_tot': torch.tensor(pd_tot_mw_data / Sbase, dtype=torch.float32), # Convert to pu here
         'qd_tot': torch.tensor(qd_tot_mvar_data / Sbase, dtype=torch.float32), # Convert to pu here
+        'solve_time': timing_tensor
     }
-    solution_data.update(result_tensors) # Add all collected tensors
-    
+    solution_data.update(result_tensors) # Add all collected tensors    
 
     print(f"Finished solving {n_data_points} AC-OPF problems for case {n_buses}.")
     return solution_data
@@ -565,12 +618,11 @@ def load_and_prepare_power_nn_for_inference(nn_file_name: str, case_num: int, co
 
     # solution data
     sd_test = solution_data['nn_input']
-    num_classes = 71
     
     # generator min max
     pg_max_zero_mask = simulation_parameters['true_system']['Sg_max'][:n_gens] < 1e-9
     gen_mask_to_keep = ~pg_max_zero_mask  # invert mask to keep desired generators
-    gen_delta = (torch.tensor(simulation_parameters['true_system']['Sg_delta'][:n_gens]).float()).unsqueeze(1)[gen_mask_to_keep]
+    gen_delta = torch.tensor(simulation_parameters['true_system']['Sg_delta'][:n_gens][gen_mask_to_keep]).float().unsqueeze(1) / 100
     gen_min = torch.zeros_like(gen_delta)
     
     # voltage min max   
@@ -580,6 +632,8 @@ def load_and_prepare_power_nn_for_inference(nn_file_name: str, case_num: int, co
     
     output_min = torch.vstack((gen_min, volt_min))
     output_delta = torch.vstack((gen_delta, volt_delta))
+    
+    num_classes = len(output_min)
     
     dem_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float()
     dem_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float()
@@ -791,7 +845,7 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
     # generator min max
     pg_max_zero_mask = simulation_parameters['true_system']['Sg_max'][:n_gens] < 1e-9
     gen_mask_to_keep = ~pg_max_zero_mask  # invert mask to keep desired generators
-    gen_delta = (torch.tensor(simulation_parameters['true_system']['Sg_delta'][:n_gens]).float()).unsqueeze(1)[gen_mask_to_keep]
+    gen_delta = torch.tensor(simulation_parameters['true_system']['Sg_delta'][:n_gens][gen_mask_to_keep]).float().unsqueeze(1) / 100
     gen_min = torch.zeros_like(gen_delta)
     
     # voltage min max   
@@ -811,6 +865,7 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
         'dem_min': dem_min,
         'dem_delta': dem_delta,
     }
+
     
     # inference
     n_bus = simulation_parameters['general']['n_buses']
@@ -1196,6 +1251,14 @@ def compare_accuracy_with_mse(ground_truth: dict, proxy: dict):
     shared_keys = set(ground_truth).intersection(proxy)
 
     for key in shared_keys:
+        if key == 'solve_time':
+            result[key] = {
+                "ground_truth_value": ground_truth[key],
+                "proxy_value": proxy[key],
+                # No MSE or deviation for solve time, as it's a direct comparison
+            }
+            continue
+        
         gt = np.asarray(ground_truth[key])
         px = np.asarray(proxy[key])
 
@@ -1244,6 +1307,7 @@ def print_comparison_table(
     table_title: str = "Comparison of Metrics for Different Models vs. Ground Truth",
     num_bus = None,
     num_samp = None, 
+    goal=None,
 ):
     """
     Prepares and prints a formatted comparison table of metrics for multiple models.
@@ -1288,6 +1352,20 @@ def print_comparison_table(
                     metric_values[k] = f"{proxy_value:.2f} ({real_value:.2f})"
                 else:
                     metric_values[k] = f"N/A (N/A)"
+            elif k in ['solve_time']:
+                proxy_value = v.get('proxy_value', 'N/A')
+                real_value = v.get('ground_truth_value', 'N/A')
+                
+                # convert to mean
+                if isinstance(proxy_value, torch.Tensor):
+                    proxy_value = torch.mean(proxy_value).item()
+                if isinstance(real_value, torch.Tensor):
+                    real_value = torch.mean(real_value).item()
+
+                if proxy_value != 'N/A' and real_value != 'N/A':
+                    metric_values[k] = f"{proxy_value:.2f}s ({real_value:.2f} s)"
+                else:
+                    metric_values[k] = f"N/A (N/A)"
             else:
                 # Use MSE for all other metrics
                 metric_values[k] = v['mean_squared_error']
@@ -1303,7 +1381,7 @@ def print_comparison_table(
     try:
         # Create a unique filename with a timestamp
         # filename = f"violations_comparison_table_{num_bus}_{num_samp}.csv"
-        filename = f"accuracy_comparison_table_{num_bus}_{num_samp}.xlsx"
+        filename = f"accuracy_comparison_table_{num_bus}_{num_samp}_{goal}.xlsx"
         
         # Get the directory of the current script and join with the filename
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1326,7 +1404,8 @@ def print_comparison_table(
         ("Power Metrics", ['pg_tot', 'qg_tot', 'pinj_tot', 'qinj_tot']),
         ("Current Metrics (Bus Injections)", ['Iinj_r_tot', 'Iinj_i_tot']),
         ("Current Metrics (Branch Flows)", ['Ibr_from_r_tot', 'Ibr_from_i_tot', 'Ibr_to_r_tot', 'Ibr_to_i_tot']),
-        ("Objective Cost (Percentage Deviation)", ['cost_tot'])  
+        ("Objective Cost (Percentage Deviation)", ['cost_tot']),  
+        ("Solve Time", ['solve_time'])
     ]
 
     print(f"{table_title}:\n")
@@ -1451,6 +1530,24 @@ def print_violations_comparison_table(
 
 def power_nn_projection(net, num_samples, solution_data_dict, pg_targets, vm_targets):
     
+    """
+    Performs the neural network projection for multiple samples and measures the time
+    taken for the Julia optimization, excluding startup overhead.
+    """
+    
+    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    # print("Performing warm-up run of the Julia optimization...")
+    # warmup_net = copy.deepcopy(net)
+    # try:
+    #     # Run a single projection on a copy of the network. This call will be slow,
+    #     # but it will prepare the Julia environment for subsequent, faster calls.
+    #     _ = runpm_opf(warmup_net)
+    #     print("Warm-up complete. Starting timed projections...")
+    # except Exception as e:
+    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
+    #     return None
+    
+    # === START MAIN TIMING LOOP ===
     all_projected_results_list = []
     
     gen_indices                          = net.gen.index.tolist() # Get actual generator indices from the pandapower net
@@ -1468,10 +1565,12 @@ def power_nn_projection(net, num_samples, solution_data_dict, pg_targets, vm_tar
         pp_net_power_proj.load['q_mvar']     = solution_data_dict['qd_tot'][:, sample] * 100
         pp_net_power_proj.gen['target_pg']   = pd.Series(pg_targets_dict_pwr) * 100 # multiply by base
         pp_net_power_proj.bus['target_vm']   = pd.Series(vm_targets_dict_pwr)
-
+        
         # do the projections:
-        pgvm_projection                      = runpm_opf(pp_net_power_proj) # pm_model = "ACPowerModel"
+        pgvm_projection, result_pm                      = runpm_opf(pp_net_power_proj) # pm_model = "ACPowerModel"
+            
         pgvm_projected_results               = extract_solution_data_from_pandapower_net(pgvm_projection, sample, num_samples)
+        pgvm_projected_results['solve_time']       = result_pm['solve_time']
         all_projected_results_list.append(pgvm_projected_results)
 
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1481,6 +1580,24 @@ def power_nn_projection(net, num_samples, solution_data_dict, pg_targets, vm_tar
 
 def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_targets):
     
+    """
+    Performs the neural network projection for multiple samples and measures the time
+    taken for the Julia optimization, excluding startup overhead.
+    """
+    
+    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    # print("Performing warm-up run of the Julia optimization...")
+    # warmup_net = copy.deepcopy(net)
+    # try:
+    #     # Run a single projection on a copy of the network. This call will be slow,
+    #     # but it will prepare the Julia environment for subsequent, faster calls.
+    #     _ = runpm_opf(warmup_net)
+    #     print("Warm-up complete. Starting timed projections...")
+    # except Exception as e:
+    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
+    #     return None
+    
+    # === START MAIN TIMING LOOP ===        
     all_projected_results_list = []
     
     gen_indices                          = net.gen.index.tolist() # Get actual generator indices from the pandapower net
@@ -1500,8 +1617,10 @@ def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_tar
         pp_net_power_ws.bus['ws_vm']         = pd.Series(vm_targets_dict_pwr)
 
         # do the projections:
-        pgvm_warm_start                      = runpm_opf(pp_net_power_ws)
+        pgvm_warm_start, result_pm                      = runpm_opf(pp_net_power_ws)
+        
         pgvm_ws_results                      = extract_solution_data_from_pandapower_net(pgvm_warm_start, sample, num_samples)
+        pgvm_ws_results['solve_time']              = result_pm['solve_time']
         all_projected_results_list.append(pgvm_ws_results)
 
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1511,6 +1630,24 @@ def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_tar
 
 def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_targets):
     
+    """
+    Performs the neural network projection for multiple samples and measures the time
+    taken for the Julia optimization, excluding startup overhead.
+    """
+    
+    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    # print("Performing warm-up run of the Julia optimization...")
+    # warmup_net = copy.deepcopy(net)
+    # try:
+    #     # Run a single projection on a copy of the network. This call will be slow,
+    #     # but it will prepare the Julia environment for subsequent, faster calls.
+    #     _ = runpm_opf(warmup_net)
+    #     print("Warm-up complete. Starting timed projections...")
+    # except Exception as e:
+    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
+    #     return None
+    
+    # === START MAIN TIMING LOOP ===    
     all_projected_results_list = []
     
     # create dicts for targets
@@ -1529,10 +1666,12 @@ def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_t
         pp_net_voltage_proj.load['q_mvar']   = solution_data_dict['qd_tot'][:, sample] * 100
         pp_net_voltage_proj.bus['target_vm'] = pd.Series(vm_targets_dict_volt) 
         pp_net_voltage_proj.bus['target_va'] = pd.Series(va_targets_dict_volt)  
-    
+        
         # do the projections:
-        vrvi_projection                      = runpm_opf(pp_net_voltage_proj) # pm_model = "ACPowerModel"
+        vrvi_projection, result_pm                      = runpm_opf(pp_net_voltage_proj) # pm_model = "ACPowerModel"
+        
         vrvi_projected_results               = extract_solution_data_from_pandapower_net(vrvi_projection, sample, num_samples)
+        vrvi_projected_results['solve_time']       = result_pm['solve_time']
         all_projected_results_list.append(vrvi_projected_results)
         
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1542,6 +1681,24 @@ def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_t
 
 def voltage_nn_warm_start(net, num_samples, solution_data_dict, vr_targets, vi_targets):
     
+    """
+    Performs the neural network projection for multiple samples and measures the time
+    taken for the Julia optimization, excluding startup overhead.
+    """
+    
+    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    # print("Performing warm-up run of the Julia optimization...")
+    # warmup_net = copy.deepcopy(net)
+    # try:
+    #     # Run a single projection on a copy of the network. This call will be slow,
+    #     # but it will prepare the Julia environment for subsequent, faster calls.
+    #     _ = runpm_opf(warmup_net)
+    #     print("Warm-up complete. Starting timed projections...")
+    # except Exception as e:
+    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
+    #     return None
+    
+    # === START MAIN TIMING LOOP ===  
     all_projected_results_list = []
     
     # create dicts for targets
@@ -1561,8 +1718,10 @@ def voltage_nn_warm_start(net, num_samples, solution_data_dict, vr_targets, vi_t
         pp_net_voltage_ws.bus['ws_vm']       = pd.Series(vm_targets_dict_volt) 
         pp_net_voltage_ws.bus['ws_va']       = pd.Series(va_targets_dict_volt)  # convert degrees to radians
         
-        vrvi_warm_start                      = runpm_opf(pp_net_voltage_ws)
+        vrvi_warm_start, result_pm                      = runpm_opf(pp_net_voltage_ws)
+          
         vrvi_ws_results                      = extract_solution_data_from_pandapower_net(vrvi_warm_start, sample, num_samples)
+        vrvi_ws_results['solve_time']              = result_pm['solve_time']
         all_projected_results_list.append(vrvi_ws_results)
         
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1578,11 +1737,194 @@ from pandapower.converter.pandamodels.from_pm import read_ots_results, read_tnep
 from pandapower.opf.pm_storage import add_storage_opf_settings, read_pm_storage_results
 
 
+# def runpm_opf(net, pp_to_pm_callback=None, calculate_voltage_angles=True,
+#                  trafo_model="t", delta=1e-8, trafo3w_losses="hv", check_connectivity=True,
+#                  pm_solver="ipopt", correct_pm_network_data=True, silence=True,
+#                  pm_time_limits=None, pm_log_level=0, pm_file_path=None, delete_buffer_file=True,
+#                  opf_flow_lim="S", pm_tol=1e-8, pdm_dev_mode=False, **kwargs):
+#     """
+#     Runs non-linear optimal power flow from PowerModels.jl via PandaModels.jl
+#     """
+#     net._options = {}
+#     _add_ppc_options(net, calculate_voltage_angles=calculate_voltage_angles,
+#                      trafo_model=trafo_model, check_connectivity=check_connectivity,
+#                      mode="opf", switch_rx_ratio=2, init_vm_pu="flat", init_va_degree="flat",
+#                      enforce_q_lims=True, recycle=dict(_is_elements=False, ppc=False, Ybus=False),
+#                      voltage_depend_loads=False, delta=delta, trafo3w_losses=trafo3w_losses)
+#     _add_opf_options(net, trafo_loading='power', ac=True, init="flat", numba=True,
+#                      pp_to_pm_callback=pp_to_pm_callback, julia_file="run_powermodels_opf_custom", pm_model="ACPPowerModel", pm_solver=pm_solver,
+#                      correct_pm_network_data=correct_pm_network_data, silence=silence, pm_time_limits=pm_time_limits,
+#                      pm_log_level=pm_log_level, opf_flow_lim=opf_flow_lim, pm_tol=pm_tol)
+
+#     net, result_pm = _runpm(net, delete_buffer_file=delete_buffer_file, pm_file_path=pm_file_path, pdm_dev_mode=pdm_dev_mode)
+    
+#     return net, result_pm
+
+
+
+# def _runpm(net, delete_buffer_file=True, pm_file_path=None, pdm_dev_mode=False, **kwargs): 
+#     """
+#     Converts the pandapower net to a pm json file, saves it to disk, runs a PandaModels.jl, and reads
+#     the results back to the pandapower net:
+#     INPUT
+#     ----------
+#     **net** - pandapower net
+#     OPTIONAL
+#     ----------
+#     **delete_buffer_file** (bool, True) - deletes the pm buffer json file if True.
+#     **pm_file_path** -path to save the converted net json file.
+#     **pdm_dev_mode** (bool, False) - If True, the develop mode of PdM is called.
+#     """
+#     # convert pandapower to power models file -> this is done in python
+#     net, pm, ppc, ppci = convert_to_pm_structure(net, **kwargs)
+#     _add_custom_targets_to_pm_in_place(net, ppci, pm)
+#     # call optional callback function
+#     if net._options["pp_to_pm_callback"] is not None:
+#         net._options["pp_to_pm_callback"](net, ppci, pm)
+#     # writes pm json to disk, which is loaded afterwards in julia
+#     buffer_file = dump_pm_json(pm, pm_file_path)
+#     logger.debug("the json file for converted net is stored in: %s" % buffer_file)
+#     # run power models optimization in julia
+
+#     result_pm = _call_pandamodels(buffer_file, net._options["julia_file"], pdm_dev_mode)
+    
+#     logger.info("Optimization ('"+net._options["julia_file"]+"') " +
+#                 "is finished in %s seconds:" % round(result_pm["solve_time"], 2))
+#     # read results and write back to net
+#     try:
+#         read_pm_results_to_net(net, ppc, ppci, result_pm)
+        
+#         if pm_file_path is None and delete_buffer_file:
+#             # delete buffer file after calculation
+#             os.remove(buffer_file)
+#             logger.debug("the json file for converted net is deleted from %s" % buffer_file)        
+#     except OPFNotConverged as e:
+#         if pm_file_path is None and delete_buffer_file:
+#             os.remove(buffer_file)
+#             logger.debug("the json file for converted net is deleted from %s" % buffer_file)
+#         raise e
+#     except Exception as e:
+#         raise e
+    
+#     return net, result_pm
+    
+
+# def _call_pandamodels(buffer_file, julia_file, dev_mode):  # pragma: no cover
+
+#     try:
+#         import julia
+#         from julia import Main
+#         from julia import Pkg
+#         from julia import Base
+#     except ImportError:
+#         raise ImportError(
+#             "Please install pyjulia properly to run pandapower with PandaModels.jl.")
+        
+#     try:
+#         julia.Julia()
+#     except:
+#         raise UserWarning(
+#             "Could not connect to julia, please check that Julia is installed and pyjulia is correctly configured")
+              
+#     if not Base.find_package("PandaModels"):
+#         logger.info("PandaModels.jl is not installed in julia. It is added now!")
+#         Pkg.Registry.update()
+#         Pkg.add("PandaModels")  
+        
+#         if dev_mode:
+#             logger.info("installing dev mode is a slow process!")
+#             Pkg.resolve()
+#             Pkg.develop("PandaModels")
+#             # add pandamodels dependencies: slow process
+#             Pkg.instantiate()
+            
+#         Pkg.build()
+#         Pkg.resolve()
+#         logger.info("Successfully added PandaModels")
+
+#     if dev_mode:
+#         Pkg.develop("PandaModels")
+#         Pkg.build()
+#         Pkg.resolve()
+#         Pkg.activate("PandaModels")
+
+#     try:
+#         Main.using("PandaModels")
+#     except ImportError:
+#         raise ImportError("cannot use PandaModels")
+
+#     Main.buffer_file = buffer_file
+#     result_pm = Main.eval(julia_file + "(buffer_file)")
+
+#     # if dev_mode:
+#     #     Pkg.activate()
+#     #     Pkg.free("PandaModels")
+#     #     Pkg.resolve()
+#     return result_pm
+
+import atexit
+global jl, Main, Pkg, Base
+jl, Main, Pkg, Base = None, None, None, None
+
+def cleanup_julia():
+    """
+    Safely shuts down the Julia runtime to prevent memory access errors on exit.
+    This function is registered with `atexit` to be called automatically.
+    """
+    global jl
+    if jl:
+        try:
+            # You can try to force a graceful shutdown here.
+            # The act of registering a cleanup function is often enough
+            # to prevent the Python/Julia GC race condition.
+            print("Shutting down Julia runtime gracefully...")
+        except Exception as e:
+            print(f"Error during Julia cleanup: {e}")
+
+def setup_julia_and_pandamodels(pdm_dev_mode=False):
+    """
+    Performs one-time setup for Julia and PandaModels.jl.
+    This function should be called ONLY ONCE at the start of the script.
+    """
+    global jl, Main, Pkg, Base
+    try:
+        from julia.api import Julia
+        jl = Julia(compiled_modules=False)
+        from julia import Main
+        from julia import Pkg
+        from julia import Base
+        
+        # Register the cleanup function to be called on exit
+        atexit.register(cleanup_julia)
+    except ImportError:
+        raise ImportError(
+            "Please install pyjulia properly to run pandapower with PandaModels.jl.")
+
+    try:
+        if not Base.find_package("PandaModels"):
+            logger.info("PandaModels.jl is not installed. It is being added now!")
+            Pkg.add("PandaModels")
+            
+        if pdm_dev_mode:
+            logger.info("Installing dev mode is a slow process!")
+            Pkg.resolve()
+            Pkg.develop("PandaModels")
+            Pkg.instantiate()
+            Pkg.activate("PandaModels")
+            
+        Pkg.build()
+        Pkg.resolve()
+        logger.info("Successfully configured PandaModels.jl")
+
+        Main.using("PandaModels")
+    except Exception as e:
+        raise RuntimeError(f"Could not setup PandaModels.jl: {e}")
+
 def runpm_opf(net, pp_to_pm_callback=None, calculate_voltage_angles=True,
-                 trafo_model="t", delta=1e-8, trafo3w_losses="hv", check_connectivity=True,
-                 pm_solver="ipopt", correct_pm_network_data=True, silence=True,
-                 pm_time_limits=None, pm_log_level=0, pm_file_path=None, delete_buffer_file=True,
-                 opf_flow_lim="S", pm_tol=1e-8, pdm_dev_mode=False, **kwargs):
+              trafo_model="t", delta=1e-8, trafo3w_losses="hv", check_connectivity=True,
+              pm_solver="ipopt", correct_pm_network_data=True, silence=True,
+              pm_time_limits=None, pm_log_level=0, pm_file_path=None, delete_buffer_file=True,
+              opf_flow_lim="S", pm_tol=1e-8, pdm_dev_mode=False, **kwargs):
     """
     Runs non-linear optimal power flow from PowerModels.jl via PandaModels.jl
     """
@@ -1597,25 +1939,19 @@ def runpm_opf(net, pp_to_pm_callback=None, calculate_voltage_angles=True,
                      correct_pm_network_data=correct_pm_network_data, silence=silence, pm_time_limits=pm_time_limits,
                      pm_log_level=pm_log_level, opf_flow_lim=opf_flow_lim, pm_tol=pm_tol)
 
-    _runpm(net, delete_buffer_file=delete_buffer_file, pm_file_path=pm_file_path, pdm_dev_mode=pdm_dev_mode)
+    net, result_pm = _runpm(net, delete_buffer_file=delete_buffer_file, pm_file_path=pm_file_path, pdm_dev_mode=pdm_dev_mode)
     
-    return net
+    return net, result_pm
 
-
-
-def _runpm(net, delete_buffer_file=True, pm_file_path=None, pdm_dev_mode=False, **kwargs): 
+def _runpm(net, delete_buffer_file=True, pm_file_path=None, pdm_dev_mode=False, **kwargs):
     """
     Converts the pandapower net to a pm json file, saves it to disk, runs a PandaModels.jl, and reads
-    the results back to the pandapower net:
-    INPUT
-    ----------
-    **net** - pandapower net
-    OPTIONAL
-    ----------
-    **delete_buffer_file** (bool, True) - deletes the pm buffer json file if True.
-    **pm_file_path** -path to save the converted net json file.
-    **pdm_dev_mode** (bool, False) - If True, the develop mode of PdM is called.
+    the results back to the pandapower net.
     """
+    # Check if Julia setup has been run
+    if not all([jl, Main, Pkg, Base]):
+        raise RuntimeError("Julia and PandaModels have not been set up. Please call `setup_julia_and_pandamodels()` once before calling this function.")
+
     # convert pandapower to power models file -> this is done in python
     net, pm, ppc, ppci = convert_to_pm_structure(net, **kwargs)
     _add_custom_targets_to_pm_in_place(net, ppci, pm)
@@ -1627,18 +1963,19 @@ def _runpm(net, delete_buffer_file=True, pm_file_path=None, pdm_dev_mode=False, 
     logger.debug("the json file for converted net is stored in: %s" % buffer_file)
     # run power models optimization in julia
 
+    # The setup for PandaModels is now done outside, so we can directly call the Julia function
     result_pm = _call_pandamodels(buffer_file, net._options["julia_file"], pdm_dev_mode)
     
     logger.info("Optimization ('"+net._options["julia_file"]+"') " +
                 "is finished in %s seconds:" % round(result_pm["solve_time"], 2))
+    
     # read results and write back to net
     try:
         read_pm_results_to_net(net, ppc, ppci, result_pm)
         
         if pm_file_path is None and delete_buffer_file:
-            # delete buffer file after calculation
             os.remove(buffer_file)
-            logger.debug("the json file for converted net is deleted from %s" % buffer_file)        
+            logger.debug("the json file for converted net is deleted from %s" % buffer_file)         
     except OPFNotConverged as e:
         if pm_file_path is None and delete_buffer_file:
             os.remove(buffer_file)
@@ -1647,65 +1984,29 @@ def _runpm(net, delete_buffer_file=True, pm_file_path=None, pdm_dev_mode=False, 
     except Exception as e:
         raise e
     
+    return net, result_pm
     
-    
-    
-
-    
-    
-
-def _call_pandamodels(buffer_file, julia_file, dev_mode):  # pragma: no cover
-
-    try:
-        import julia
-        from julia import Main
-        from julia import Pkg
-        from julia import Base
-    except ImportError:
-        raise ImportError(
-            "Please install pyjulia properly to run pandapower with PandaModels.jl.")
-        
-    try:
-        julia.Julia()
-    except:
-        raise UserWarning(
-            "Could not connect to julia, please check that Julia is installed and pyjulia is correctly configured")
-              
-    if not Base.find_package("PandaModels"):
-        logger.info("PandaModels.jl is not installed in julia. It is added now!")
-        Pkg.Registry.update()
-        Pkg.add("PandaModels")  
-        
-        if dev_mode:
-            logger.info("installing dev mode is a slow process!")
-            Pkg.resolve()
-            Pkg.develop("PandaModels")
-            # add pandamodels dependencies: slow process
-            Pkg.instantiate()
-            
-        Pkg.build()
-        Pkg.resolve()
-        logger.info("Successfully added PandaModels")
-
+def _call_pandamodels(buffer_file, julia_file, dev_mode):
+    # This function is now streamlined to only call Julia code
+    # The setup is done once in a separate function.
     if dev_mode:
-        Pkg.develop("PandaModels")
-        Pkg.build()
-        Pkg.resolve()
         Pkg.activate("PandaModels")
-
-    try:
-        Main.using("PandaModels")
-    except ImportError:
-        raise ImportError("cannot use PandaModels")
-
+    
     Main.buffer_file = buffer_file
     result_pm = Main.eval(julia_file + "(buffer_file)")
 
-    # if dev_mode:
-    #     Pkg.activate()
-    #     Pkg.free("PandaModels")
-    #     Pkg.resolve()
+    if dev_mode:
+        Pkg.activate() # Return to default Julia environment after dev run
+        
     return result_pm
+
+
+
+
+
+
+
+
 
 
 

@@ -33,7 +33,11 @@ def create_example_parameters(n_buses: int):
     # ============= specify pglib-opf case based on n_buses ==================
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   
     
-    if n_buses == 118:
+    if n_buses == 14:
+        case_name = 'pglib_opf_case14_ieee.m'
+    elif n_buses == 57:
+        case_name = 'pglib_opf_case57_ieee.m'
+    elif n_buses == 118:
         case_name = 'pglib_opf_case118_ieee.m'
     elif n_buses == 300:
         case_name = 'pglib_opf_case300_ieee.m'

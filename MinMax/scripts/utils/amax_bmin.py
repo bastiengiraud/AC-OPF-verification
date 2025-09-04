@@ -7,6 +7,21 @@ import matplotlib.animation as animation
 from matplotlib.widgets import CheckButtons # Import CheckButtons widget
 
 
+import matplotlib as mpl
+
+
+plt.style.use(['C:/Users/bagir/OneDrive - Danmarks Tekniske Universitet/Dokumenter/0) DTU Admin/5) Templates/thesis.mplstyle'])
+plt.rcParams['text.usetex'] = False
+
+
+from matplotlib import font_manager
+
+font_manager.fontManager.addfont('C:/Users/bagir/OneDrive - Danmarks Tekniske Universitet/Dokumenter/0) DTU Admin/5) Templates/palr45w.ttf')
+plt.rcParams['font.family'] = 'Palatino' # Set the font globally
+#plt.rcParams['font.family'] = 'sans-serif'
+
+
+
 
 def plot_animated_ambm_approximation():
     """
@@ -203,7 +218,7 @@ def plot_animated_ambm_approximation():
     plt.show()
 
 # Run the animation
-plot_animated_ambm_approximation()
+# plot_animated_ambm_approximation()
 
 
 
@@ -479,6 +494,28 @@ def plot_animated_ambm_approximation():
     ani = animation.FuncAnimation(fig, update, frames=range(361), interval=50, blit=False)
 
     plt.show()
+    
+    # # --- New: Separate Error Plot (0 to 90 degrees only) ---
+    # # Convert to numpy for easy masking
+    # error_angles_arr = np.array(error_angles)
+    # relative_error_values_arr = np.array(relative_error_values)
+
+    # # Mask for 0–90 degrees
+    # mask = (error_angles_arr >= 0) & (error_angles_arr <= 90)
+
+    # # Create new figure
+    # fig2, ax_error_zoom = plt.subplots(figsize=(8, 5))
+    # ax_error_zoom.plot(error_angles_arr[mask], relative_error_values_arr[mask],
+    #                    color='purple', label='Relative Error (0°–90°)')
+    # ax_error_zoom.set_xlim([0, 90])
+    # ax_error_zoom.set_ylim([0, 0.5])  # Adjust depending on your max error
+    # ax_error_zoom.set_xlabel('Angle (degrees)')
+    # ax_error_zoom.set_ylabel('Relative Error')
+    # ax_error_zoom.set_title('Relative Approximation Error (0°–90°)')
+    # ax_error_zoom.grid(True, linestyle='--', alpha=0.6)
+    # ax_error_zoom.axhline(0, color='black', linestyle='-', linewidth=0.8)
+    # ax_error_zoom.legend()
+    # plt.show()
 
 # Run the animation
 plot_animated_ambm_approximation()
@@ -736,15 +773,119 @@ def plot_animated_ambm_approximation():
     ani = animation.FuncAnimation(fig, update, frames=range(361), interval=50, blit=False)
 
     plt.show()
+    
+    # # --- New: Separate Error Plot (0 to 90 degrees only) ---
+    # # Convert to numpy for easy masking
+    # error_angles_arr = np.array(error_angles)
+    # relative_error_values_arr = np.array(relative_error_values)
+
+    # # Mask for 0–90 degrees
+    # mask = (error_angles_arr >= 0) & (error_angles_arr <= 90)
+
+    # # Create new figure
+    # fig2, ax_error_zoom = plt.subplots(figsize=(8, 5))
+    # ax_error_zoom.plot(error_angles_arr[mask], relative_error_values_arr[mask],
+    #                    color='purple', label='Relative Error (0°–90°)')
+    # ax_error_zoom.set_xlim([0, 90])
+    # ax_error_zoom.set_ylim([0, 0.5])  # Adjust depending on your max error
+    # ax_error_zoom.set_xlabel('Angle (degrees)')
+    # ax_error_zoom.set_ylabel('Relative Error')
+    # ax_error_zoom.set_title('Relative Approximation Error (0°–90°)')
+    # ax_error_zoom.grid(True, linestyle='--', alpha=0.6)
+    # ax_error_zoom.axhline(0, color='black', linestyle='-', linewidth=0.8)
+    # ax_error_zoom.legend()
+    # plt.show()
 
 # Run the animation
-plot_animated_ambm_approximation()
+# plot_animated_ambm_approximation()
 
 
 
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter, MaxNLocator
 
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter, MaxNLocator
 
+def plot_static_over_under_errors_vertical():
+    # --- Angle domain 0°–90° ---
+    angles_deg = np.linspace(0, 90, 500)
+    angles_rad = np.deg2rad(angles_deg)
+    cos_theta = np.cos(angles_rad)
+    sin_theta = np.sin(angles_rad)
+    abs_real = np.abs(cos_theta)
+    abs_imag = np.abs(sin_theta)
+    max_val = np.maximum(abs_real, abs_imag)
+    min_val = np.minimum(abs_real, abs_imag)
 
+    # --- Over-approximation (tight upper bound) ---
+    alpha, beta = 1.0, np.sqrt(2) - 1
+    approx_over = alpha * max_val + beta * min_val
+    rel_error_over = approx_over - 1.0
+    avg_error_over = np.mean(rel_error_over)
+    max_error_over = np.max(rel_error_over)
+
+    # --- Under-approximation (tight lower bound) ---
+    alpha_Linf_under, beta_Linf_under = 1.0, 0.0
+    alpha_L1_under, beta_L1_under = 1.0/np.sqrt(2), 1.0/np.sqrt(2)
+    L1_under = alpha_L1_under * max_val + beta_L1_under * min_val
+    Linf_under = alpha_Linf_under * max_val + beta_Linf_under * min_val
+    approx_under = np.maximum(L1_under, Linf_under)
+    rel_error_under = 1.0 - approx_under
+    avg_error_under = np.mean(rel_error_under)
+    max_error_under = np.max(rel_error_under)
+
+    # --- Plot ---
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 4), sharex=True)
+
+    tick_fontsize = 12  # increase tick font size
+
+    # Over-approx
+    ax1.plot(angles_deg, rel_error_over, color="black", lw=2)
+    ax1.axhline(avg_error_over, color="blue", linestyle="--", lw=1.5)
+    ax1.axhline(max_error_over, color="red", linestyle="--", lw=1.5)
+    ax1.set_xlim(0, 90)
+    ax1.set_ylim(0, 0.1)
+    ax1.set_ylabel("Relative error", fontsize=12)
+    ax1.set_title("Over-approximation error", fontsize=13)
+    ax1.grid(True, linestyle="--", alpha=0.6)
+    ax1.axhline(0, color="black", lw=0.8)
+    ax1.yaxis.set_major_formatter(PercentFormatter(1))
+    ax1.yaxis.set_major_locator(MaxNLocator(4))  # fewer ticks
+    ax1.tick_params(axis='both', labelsize=tick_fontsize)
+
+    # annotate errors inside the plot
+    ax1.text(40, avg_error_over + 0.002, f"avg: {avg_error_over*100:.2f}%", color="blue", fontsize=12)
+    ax1.text(40, max_error_over + 0.002, f"max: {max_error_over*100:.2f}%", color="red", fontsize=12)
+
+    # Under-approx
+    ax2.plot(angles_deg, rel_error_under, color="black", lw=2)
+    ax2.axhline(avg_error_under, color="blue", linestyle="--", lw=1.5)
+    ax2.axhline(max_error_under, color="red", linestyle="--", lw=1.5)
+    ax2.set_xlim(0, 90)
+    ax2.set_ylim(0, 0.1)
+    ax2.set_xlabel(r"Angle $\theta$ (°)", fontsize=12)
+    ax2.set_ylabel("Relative error", fontsize=12)
+    ax2.set_title("Under-approximation error", fontsize=13)
+    ax2.grid(True, linestyle="--", alpha=0.6)
+    ax2.axhline(0, color="black", lw=0.8)
+    ax2.yaxis.set_major_formatter(PercentFormatter(1))
+    ax2.yaxis.set_major_locator(MaxNLocator(4))
+    ax2.tick_params(axis='both', labelsize=tick_fontsize)
+
+    # annotate errors inside the plot
+    ax2.text(40, avg_error_under + 0.002, f"avg: {avg_error_under*100:.2f}%", color="blue", fontsize=12)
+    ax2.text(40, max_error_under + 0.002, f"max: {max_error_under*100:.2f}%", color="red", fontsize=12)
+
+    plt.tight_layout()
+    plt.show()
+
+# Run
+plot_static_over_under_errors_vertical()
 
 
 
