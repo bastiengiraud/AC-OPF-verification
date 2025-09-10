@@ -60,9 +60,9 @@ def build_network(nn_type, n_input_neurons, n_output_neurons, hidden_layer_size,
         return model#.to(device)
 
 
-def load_weights(nn_type, nn_file_name, input_dim = 198, num_classes = 236):
+def load_weights(config, nn_type, nn_file_name, input_dim = 198, num_classes = 236):
     
-    config = create_config()
+    # config = create_config()
     simulation_parameters = create_example_parameters(config.test_system)   
     
     network_gen = build_network(nn_type, input_dim, num_classes, config.hidden_layer_size,

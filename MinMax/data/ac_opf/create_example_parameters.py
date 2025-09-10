@@ -5,7 +5,7 @@ import pandapower as pp
 import pandapower.converter as pc
 from pypower.makeYbus import makeYbus
 from pypower.idx_brch import F_BUS, T_BUS, BR_B, BR_R, BR_X
-
+import copy
 
 
 def create_example_parameters(n_buses: int):
@@ -55,10 +55,17 @@ def create_example_parameters(n_buses: int):
     # -----------------------------------------------------------------------------------------------
     try:
         net = pc.from_mpc(case_path, casename_mpc_file=True)
-        # It's good practice to run an initial power flow or OPF to populate result fields
-        pp.runopp(net, verbose=False) 
+        print(f"✅ Successfully loaded case file: {case_name}")
     except Exception as e:
-        print(f"Error loading or processing case file {case_path}: {e}")
+        print(f"Error loading case file {case_path}: {e}")
+
+    try:
+        pp.runpp(net, verbose=False)
+        if not net.converged:
+            raise RuntimeError("OPF did not converge.")
+    except Exception as e:
+        print(f"OPF failed: {e}. Falling back to standard Power Flow (runpp)...")
+
     
     # Get the internal PYPOWER case from the pandapower network
     ppc = pc.to_ppc(net, init = 'flat') # net._ppc

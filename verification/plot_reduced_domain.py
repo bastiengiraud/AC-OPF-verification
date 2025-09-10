@@ -16,13 +16,14 @@ plt.rcParams['font.family'] = 'Palatino' # Set the font globally
 # --- CONFIG ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
 excel_files = [
-    "model_verification_results_14_buses.xlsx",
+    #"model_verification_results_14_buses.xlsx",
     "model_verification_results_57_buses.xlsx",
     "model_verification_results_118_buses.xlsx",
+    "model_verification_results_300_buses.xlsx",
 ]
 
 # Deltas must be consistent across files
-deltas = [0.8, 0.9, 1.0, 1.1, 1.2]  # adapt if needed
+deltas = [0.04, 0.08, 0.12, 0.16, 0.199]  
 
 # --- Helper: Load results ---
 def load_results(filepath):
@@ -56,10 +57,20 @@ def plot_group(excel_files, group_name, save_name, model_filter):
         "Pg tot Avg Violation": r"$\nu_{P_g}^{\mathrm{avg}}$",
         "Qg tot Max Violation": r"$\nu_{Q_g}^{\mathrm{max}}$",
         "Qg tot Avg Violation": r"$\nu_{Q_g}^{\mathrm{avg}}$",
-        "Vm tot Max Violation": r"$\nu_{V_m}^{\mathrm{max}}$",
-        "Vm tot Avg Violation": r"$\nu_{V_m}^{\mathrm{avg}}$",
+        "Vmg tot Max Violation": r"$\nu_{V_m,g}^{\mathrm{max}}$",
+        "Vmg tot Avg Violation": r"$\nu_{V_m,g}^{\mathrm{avg}}$",
         "Ibr tot Max Violation": r"$\nu_{l}^{\mathrm{max}}$",
         "Ibal tot Max Violation": r"$\nu_{bal}^{\mathrm{max}}$",
+    }
+    
+    metric_colors = {
+        "Pg tot Max Violation": "tab:blue",
+        "Qg tot Max Violation": "tab:orange",
+        "Vmg tot Max Violation": "tab:green",
+        "Ibr tot Max Violation": "tab:red",
+        "Ibal tot Max Violation": "tab:purple",
+        #"Qg tot Max Violation": "tab:brown",
+        # Add more if needed
     }
 
 
@@ -69,7 +80,11 @@ def plot_group(excel_files, group_name, save_name, model_filter):
         df.index = df.index.astype(str).str.strip()
 
         # Get only "Max Violation" metrics
-        metrics_to_plot = [m for m in df.index if "tot Max" in m]
+        metrics_to_plot = [
+            m for m in df.index 
+            if "tot Max" in m and m != "Vm tot Max Violation"
+        ]
+
 
         # Parse model names + deltas
         parsed = [split_col(c) for c in df.columns]
@@ -95,9 +110,26 @@ def plot_group(excel_files, group_name, save_name, model_filter):
                 if metric in model_data.index:
                     series = model_data.loc[metric, :]
                     # Skip plotting if all values are NaN or 0
-                    if series.isna().all() or (series == 0).all():
+                    color = metric_colors.get(metric, None)  # consistent metric color
+
+                    if series.isna().all():
                         continue
-                    ax.plot(deltas, series, marker='o', markersize=6, linewidth=2, label=metric_labels.get(metric, metric))
+
+                    if (series == 0).all():
+                        # plot a flat line at 0 in the metric’s color
+                        ax.plot(
+                            deltas, [0] * len(deltas),
+                            marker='o', markersize=6,
+                            color=color, linewidth=2,
+                            label=metric_labels.get(metric, metric)
+                        )
+                    else:
+                        ax.plot(
+                            deltas, series,
+                            marker='o', markersize=6, linewidth=2,
+                            color=color,
+                            label=metric_labels.get(metric, metric)
+                        )
 
 
         ax.set_title(f"{system_size}-bus system", fontsize=12, fontweight="bold")

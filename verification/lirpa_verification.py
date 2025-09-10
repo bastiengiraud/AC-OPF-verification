@@ -33,9 +33,9 @@ plt.rcParams['font.family'] = 'Palatino' # Set the font globally
 #plt.rcParams['font.family'] = 'sans-serif'
 
 
-def create_config():
+def create_config(n_buses):
     parameters_dict = {
-        'test_system': 57,
+        'test_system': n_buses,
         'hidden_layer_size': 50,
         'n_hidden_layers': 3,
         'epochs': 1000,
@@ -56,6 +56,25 @@ def create_config():
         'Enrich': False,
         'abc_method': 'backward', # "CROWN", "Dynamic-Forward", CROWN-Optimized, IBP, alpha-CROWN, backward
     }
+    
+    if n_buses == 14:
+        parameters_dict['hidden_layer_size'] = 15
+        parameters_dict['learning_rate'] = 2e-4
+        parameters_dict['batch_size'] = 15
+    elif n_buses == 57:
+        parameters_dict['hidden_layer_size'] = 25
+        parameters_dict['learning_rate'] = 5e-4
+        parameters_dict['batch_size'] = 25
+    elif n_buses == 118:
+        parameters_dict['hidden_layer_size'] = 50
+        parameters_dict['learning_rate'] = 10e-4
+        parameters_dict['batch_size'] = 50
+    elif n_buses == 300:
+        parameters_dict['hidden_layer_size'] = 75
+        parameters_dict['learning_rate'] = 10e-4
+        parameters_dict['batch_size'] = 75
+    
+    
     config = SimpleNamespace(**parameters_dict)
     return config
 
@@ -63,7 +82,7 @@ def create_config():
 
 
 # load simulation parameters
-config = create_config()
+config = create_config(300)
 simulation_parameters = create_example_parameters(config.test_system)
 n_buses = config.test_system
 n_gens = simulation_parameters['general']['n_gbus']
@@ -90,11 +109,12 @@ map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.
 sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32)
 pg_max_gens = sg_max[:n_gens, :][gen_mask_to_keep.squeeze()] / 100 # (sg_max.T @ map_g)[:, :n_buses]
 
-# pg_max = (sg_max.T @ map_g)[:, :n_buses]
+pg_max_for_mask = (sg_max.T @ map_g)[:, :n_buses]
 # qg_max = (sg_max.T @ map_g)[:, n_buses:]
 
-num_gen_nn = len(gen_mask_to_keep)
+gen_bus_mask = (pg_max_for_mask > 0)
 
+num_gen_nn = len(gen_mask_to_keep)
 
 
 
@@ -137,6 +157,13 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
             f'checkpoint_{n_buses}_25_False_pg_vm_final.pt', 
             f'checkpoint_{n_buses}_25_True_pg_vm_final.pt'
         ]
+    elif n_buses == 300:
+        nn_to_verify = [
+            f'checkpoint_{n_buses}_75_False_vr_vi_final.pt', 
+            f'checkpoint_{n_buses}_75_True_vr_vi_final.pt',
+            f'checkpoint_{n_buses}_75_False_pg_vm_final.pt', 
+            f'checkpoint_{n_buses}_75_True_pg_vm_final.pt'
+        ]
 
     # Shared verification setup
     optimize_bound_args = {
@@ -169,6 +196,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
         # Reshape and convert to float tensors for CROWN
         x_min = x_min.reshape(1, -1).clone().detach().float()
         x_max = x_max.reshape(1, -1).clone().detach().float()
+        input_dim = len(x_min[0])
 
         # Calculate the center of the new interval
         x = (x_min + x_max) / 2
@@ -189,41 +217,85 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
             # Load the model weights based on the name convention
             if 'vr_vi' in name:
                 model_type = 'vr_vi'
-                nn_model = load_weights(model_type, name)
+                output_dim = 2*n_buses
+                nn_model = load_weights(config, model_type, name, input_dim = input_dim, num_classes = output_dim)
+                print(nn_model)
                 
                 # Check upper generator real power violation
                 pg_up_model = BoundedModule(OutputWrapper(nn_model, 7), torch.empty_like(x), optimize_bound_args)
-                _, ub = pg_up_model.compute_bounds(x=(image,), method="backward")
+                _, ub = pg_up_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 upper_pg_violation = torch.relu(ub - pg_max)
-                metrics['Pg Up Max Violation'] = upper_pg_violation.max().item()
-                metrics['Pg Up Avg Violation'] = upper_pg_violation.mean().item()
+                metrics['Pg Up Max Violation'] = upper_pg_violation[gen_bus_mask].max().item()
+                metrics['Pg Up Avg Violation'] = upper_pg_violation[gen_bus_mask].mean().item()
 
                 # Check lower generator real power violation
                 pg_down_model = BoundedModule(OutputWrapper(nn_model, 8), torch.empty_like(x), optimize_bound_args)
-                lb, _ = pg_down_model.compute_bounds(x=(image,), method="backward")
+                lb, _ = pg_down_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 lower_pg_violation = torch.relu(pg_min - lb)
-                metrics['Pg Down Max Violation'] = lower_pg_violation.max().item()
-                metrics['Pg Down Avg Violation'] = lower_pg_violation.mean().item()
+                metrics['Pg Down Max Violation'] = lower_pg_violation[gen_bus_mask].max().item()
+                metrics['Pg Down Avg Violation'] = lower_pg_violation[gen_bus_mask].mean().item()
                 
-                metrics['Pg tot Max Violation'] = torch.max(torch.cat([upper_pg_violation, lower_pg_violation])).item()
-                metrics['Pg tot Avg Violation'] = torch.mean(torch.cat([upper_pg_violation, lower_pg_violation])).item()
+                metrics['Pg tot Max Violation'] = torch.max(torch.cat([upper_pg_violation[gen_bus_mask], lower_pg_violation[gen_bus_mask]])).item()
+                metrics['Pg tot Avg Violation'] = torch.mean(torch.cat([upper_pg_violation[gen_bus_mask], lower_pg_violation[gen_bus_mask]])).item()
+                
+                ######################################################
+                # try verifying individually instead of vectorized ###
+                #######################################################
+                
+                # # --- VERIFICATION FOR PG_UP AND PG_DOWN VIOLATIONS ---
+                # # Create a bounded module for the pg_up output vector
+                # pg_up_model = BoundedModule(OutputWrapper(nn_model, 7), torch.empty_like(x), optimize_bound_args)
+                # pg_down_model = BoundedModule(OutputWrapper(nn_model, 8), torch.empty_like(x), optimize_bound_args)
+                
+                # upper_violations = []
+                # lower_violations = []
+                
+                # # Now, loop through each element of the output vectors
+                # for g_idx in range(n_buses):
+                #     # Create a one-hot C matrix to select a single output
+                #     C = torch.zeros((1, n_buses), device=x.device, dtype=x.dtype)
+                #     C[0, g_idx] = 1.0
+                    
+                #     # Compute bounds on only one generator at a time
+                #     _, ub = pg_up_model.compute_bounds(x=(image,), C=C, method="backward")
+                #     lb, _ = pg_down_model.compute_bounds(x=(image,), C=C, method="backward")
+                    
+                #     upper_violation = torch.relu(ub - pg_max[g_idx])
+                #     upper_violations.append(upper_violation.item())
+
+                #     lower_violation = torch.relu(pg_min[g_idx] - lb)
+                #     lower_violations.append(lower_violation.item())
+
+                # # Combine violations into a single tensor/vector
+                # upper_violations = torch.tensor(upper_violations)
+                # lower_violations = torch.tensor(lower_violations)
+
+                # metrics['Pg Up Max Violation'] = upper_violations.max().item()
+                # metrics['Pg Up Avg Violation'] = upper_violations.mean().item()
+                # metrics['Pg Down Max Violation'] = lower_violations.max().item()
+                # metrics['Pg Down Avg Violation'] = lower_violations.mean().item()
+                # metrics['Pg tot Max Violation'] = torch.max(upper_violations.max(), lower_violations.max()).item()
+                # metrics['Pg tot Avg Violation'] = torch.mean(torch.cat([upper_violations, lower_violations])).item()
+
+                ###########################################################
+                ##########################################################
 
                 # Check upper generator reactive power violation
                 qg_up_model = BoundedModule(OutputWrapper(nn_model, 9), torch.empty_like(x), optimize_bound_args)
-                _, ub = qg_up_model.compute_bounds(x=(image,), method="backward")
+                _, ub = qg_up_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 upper_qg_violation = torch.relu(ub - qg_max)
-                metrics['Qg Up Max Violation'] = upper_qg_violation.max().item()
-                metrics['Qg Up Avg Violation'] = upper_qg_violation.mean().item()
+                metrics['Qg Up Max Violation'] = upper_qg_violation[gen_bus_mask].max().item()
+                metrics['Qg Up Avg Violation'] = upper_qg_violation[gen_bus_mask].mean().item()
 
                 # Check lower generator reactive power violation
                 qg_down_model = BoundedModule(OutputWrapper(nn_model, 10), torch.empty_like(x), optimize_bound_args)
-                lb, _ = qg_down_model.compute_bounds(x=(image,), method="backward")
+                lb, _ = qg_down_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 lower_qg_violation = torch.relu(qg_min - lb)
-                metrics['Qg Down Max Violation'] = lower_qg_violation.max().item()
-                metrics['Qg Down Avg Violation'] = lower_qg_violation.mean().item()
+                metrics['Qg Down Max Violation'] = lower_qg_violation[gen_bus_mask].max().item()
+                metrics['Qg Down Avg Violation'] = lower_qg_violation[gen_bus_mask].mean().item()
                 
-                metrics['Qg tot Max Violation'] = torch.max(torch.cat([upper_qg_violation, lower_qg_violation])).item()
-                metrics['Qg tot Avg Violation'] = torch.mean(torch.cat([upper_qg_violation, lower_qg_violation])).item()
+                metrics['Qg tot Max Violation'] = torch.max(torch.cat([upper_qg_violation[gen_bus_mask], lower_qg_violation[gen_bus_mask]])).item()
+                metrics['Qg tot Avg Violation'] = torch.mean(torch.cat([upper_qg_violation[gen_bus_mask], lower_qg_violation[gen_bus_mask]])).item()
                 
                 # Check upper current magnitude violation
                 imag_up_model = BoundedModule(OutputWrapper(nn_model, 4), torch.empty_like(x), optimize_bound_args)
@@ -238,6 +310,9 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 vmag_up_violation = torch.relu(ub - vmag_max)
                 metrics['Vm Up Max Violation'] = vmag_up_violation.max().item()
                 metrics['Vm Up Avg Violation'] = vmag_up_violation.mean().item()
+                
+                metrics['Vmg Up Max Violation'] = vmag_up_violation[gen_bus_mask].max().item()
+                metrics['Vmg Up Avg Violation'] = vmag_up_violation[gen_bus_mask].mean().item()
 
                 # Check lower voltage magnitude violation
                 vmag_down_model = BoundedModule(OutputWrapper(nn_model, 6), torch.empty_like(x), optimize_bound_args)
@@ -246,15 +321,21 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 metrics['Vm Down Max Violation'] = vmag_down_violation.max().item()
                 metrics['Vm Down Avg Violation'] = vmag_down_violation.mean().item()
                 
+                metrics['Vmg Down Max Violation'] = vmag_down_violation[gen_bus_mask].max().item()
+                metrics['Vmg Down Avg Violation'] = vmag_down_violation[gen_bus_mask].mean().item()
+                
                 metrics['Vm tot Max Violation'] = torch.max(torch.cat([vmag_up_violation, vmag_down_violation])).item()
                 metrics['Vm tot Avg Violation'] = torch.mean(torch.cat([vmag_up_violation, vmag_down_violation])).item()
+                
+                metrics['Vmg tot Max Violation'] = torch.max(torch.cat([vmag_up_violation[gen_bus_mask], vmag_down_violation[gen_bus_mask]])).item()
+                metrics['Vmg tot Avg Violation'] = torch.mean(torch.cat([vmag_up_violation[gen_bus_mask], vmag_down_violation[gen_bus_mask]])).item()
                 
                 # Check current balance violation
                 inj_real_model = BoundedModule(OutputWrapper(nn_model, 11), torch.empty_like(x), optimize_bound_args)
                 inj_imag_model = BoundedModule(OutputWrapper(nn_model, 12), torch.empty_like(x), optimize_bound_args)
                 
-                lb_r, ub_r = inj_real_model.compute_bounds(x=(image,), method="backward")
-                lb_i, ub_i = inj_imag_model.compute_bounds(x=(image,), method="backward")
+                lb_r, ub_r = inj_real_model.compute_bounds(x=(image,), method="alpha-CROWN")
+                lb_i, ub_i = inj_imag_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 
                 worst_case_inj_real = torch.max(lb_r**2, ub_r**2)
                 worst_case_inj_imag = torch.max(lb_i**2, ub_i**2)
@@ -265,13 +346,14 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 
             elif 'pg_vm' in name:
                 model_type = 'pg_vm'
-                nn_model = load_weights(model_type, name)
+                output_dim = n_gens + num_gen_nn
+                nn_model = load_weights(config, model_type, name, input_dim = input_dim, num_classes=output_dim)
                 model = BoundedModule(nn_model, torch.empty_like(x), optimize_bound_args)
                 
                 # This dictionary will hold the metrics for the current model
                 metrics = {}
 
-                lb, ub = model.compute_bounds(x=(image,), method="backward")
+                lb, ub = model.compute_bounds(x=(image,), method="alpha-CROWN")
                 
                 # Split the output bounds based on the model's output features
                 lb_pg = lb[:, :num_gen_nn]
@@ -294,16 +376,16 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 
                 # Check lower voltage violation
                 vmag_down_violation = torch.relu(vmag_min - lb_vg)
-                metrics['Vm Down Max Violation'] = vmag_down_violation.max().item()
-                metrics['Vm Down Avg Violation'] = vmag_down_violation.mean().item()
+                metrics['Vmg Down Max Violation'] = vmag_down_violation.max().item()
+                metrics['Vmg Down Avg Violation'] = vmag_down_violation.mean().item()
                 
                 # Check upper voltage violation
                 vmag_up_violation = torch.relu(ub_vg - vmag_max)
-                metrics['Vm Up Max Violation'] = vmag_up_violation.max().item()
-                metrics['Vm Up Avg Violation'] = vmag_up_violation.mean().item()
+                metrics['Vmg Up Max Violation'] = vmag_up_violation.max().item()
+                metrics['Vmg Up Avg Violation'] = vmag_up_violation.mean().item()
                 
-                metrics['Vm tot Max Violation'] = torch.max(torch.cat([vmag_up_violation, vmag_down_violation])).item()
-                metrics['Vm tot Avg Violation'] = torch.mean(torch.cat([vmag_up_violation, vmag_down_violation])).item()
+                metrics['Vmg tot Max Violation'] = torch.max(torch.cat([vmag_up_violation, vmag_down_violation])).item()
+                metrics['Vmg tot Avg Violation'] = torch.mean(torch.cat([vmag_up_violation, vmag_down_violation])).item()
                 
             # Store the raw metrics for the current model in the main results dictionary
             all_raw_results[name][delta] = metrics

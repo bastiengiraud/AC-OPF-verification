@@ -868,7 +868,7 @@ def plot_static_over_under_errors_vertical():
     ax2.axhline(max_error_under, color="red", linestyle="--", lw=1.5)
     ax2.set_xlim(0, 90)
     ax2.set_ylim(0, 0.1)
-    ax2.set_xlabel(r"Angle $\theta$ (°)", fontsize=12)
+    ax2.set_xlabel(r"$\theta$ (°)", fontsize=12)
     ax2.set_ylabel("Relative error", fontsize=12)
     ax2.set_title("Under-approximation error", fontsize=13)
     ax2.grid(True, linestyle="--", alpha=0.6)
@@ -886,6 +886,134 @@ def plot_static_over_under_errors_vertical():
 
 # Run
 plot_static_over_under_errors_vertical()
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter, FixedLocator
+
+def plot_static_over_under_errors_quadrant():
+    # --- Angle domain 0°–90° ---
+    angles_deg = np.linspace(0, 90, 500)
+    angles_rad = np.deg2rad(angles_deg)
+    cos_theta = np.cos(angles_rad)
+    sin_theta = np.sin(angles_rad)
+    abs_real = np.abs(cos_theta)
+    abs_imag = np.abs(sin_theta)
+    max_val = np.maximum(abs_real, abs_imag)
+    min_val = np.minimum(abs_real, abs_imag)
+
+    # --- Over-approximation (tight upper bound) ---
+    alpha, beta = 1.0, np.sqrt(2) - 1
+    approx_over = alpha * max_val + beta * min_val
+    rel_error_over = approx_over - 1.0
+    avg_error_over = np.mean(rel_error_over)
+    max_error_over = np.max(rel_error_over)
+
+    # --- Under-approximation (tight lower bound) ---
+    alpha_Linf_under, beta_Linf_under = 1.0, 0.0
+    alpha_L1_under, beta_L1_under = 1.0/np.sqrt(2), 1.0/np.sqrt(2)
+    L1_under = alpha_L1_under * max_val + beta_L1_under * min_val
+    Linf_under = alpha_Linf_under * max_val + beta_Linf_under * min_val
+    approx_under = np.maximum(L1_under, Linf_under)
+    rel_error_under = 1.0 - approx_under
+    avg_error_under = np.mean(rel_error_under)
+    max_error_under = np.max(rel_error_under)
+
+    # --- Colors ---
+    c_over = "#d62728"   # red
+    c_under = "#1f77b4"  # blue
+    c_ref = "black"
+    c_gray = "0.4"
+
+    # --- Create figure with adjusted column widths ---
+    fig, axes = plt.subplots(
+        2, 2, figsize=(10, 6), 
+        gridspec_kw={'width_ratios': [1, 1.3], 'hspace': 0.3, 'wspace': 0.05}
+    )
+    tick_fontsize = 13
+    legend_fontsize = 12
+
+    # ========== Over-approx quadrant ==========
+    ax = axes[0,0]
+    ax.plot(cos_theta, sin_theta, color=c_ref, lw=2, label="True norm = 1")
+    x_over = cos_theta * approx_over
+    y_over = sin_theta * approx_over
+    ax.plot(x_over, y_over, color=c_over, linestyle="--", lw=2, label="Over-approx")
+    ax.set_title("Over-approximation", fontsize=13)
+    ax.set_xlim(0, 1.1)
+    ax.set_ylim(0, 1.1)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+    ax.xaxis.set_major_locator(FixedLocator([0.0, 0.5, 1.0]))
+    ax.yaxis.set_major_locator(FixedLocator([0.0, 0.5, 1.0]))
+    ax.legend(fontsize=legend_fontsize, loc="lower left")
+    xticks = ax.get_xticks()
+    ax.set_xticks(xticks[1:])
+
+    # ========== Under-approx quadrant ==========
+    ax = axes[1,0]
+    ax.plot(cos_theta, sin_theta, color=c_ref, lw=2, label="True norm = 1")
+    x_under = cos_theta * approx_under
+    y_under = sin_theta * approx_under
+    ax.plot(x_under, y_under, color=c_under, linestyle="--", lw=2, label="Under-approx")
+    ax.set_title("Under-approximation", fontsize=13)
+    ax.set_xlim(0, 1.1)
+    ax.set_ylim(0, 1.1)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+    ax.xaxis.set_major_locator(FixedLocator([0.0, 0.5, 1.0]))
+    ax.yaxis.set_major_locator(FixedLocator([0.0, 0.5, 1.0]))
+    ax.legend(fontsize=legend_fontsize, loc="lower left")
+    xticks = ax.get_xticks()
+    ax.set_xticks(xticks[1:])
+
+    # ========== Over-approx error ==========
+    ax = axes[0,1]
+    ax.plot(angles_deg, rel_error_over, color=c_over, lw=2, label="Error curve")
+    ax.axhline(avg_error_over, color=c_over, linestyle="--", lw=1.2, alpha=0.7,
+               label=f"avg: {avg_error_over*100:.2f}%")
+    ax.axhline(max_error_over, color=c_over, linestyle=":", lw=1.2, alpha=0.7,
+               label=f"max: {max_error_over*100:.2f}%")
+    ax.set_xlim(0, 90)
+    ax.set_ylim(0, 0.1)
+    ax.set_title("Error", fontsize=13)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.axhline(0, color=c_gray, lw=0.8)
+    ax.yaxis.set_major_formatter(PercentFormatter(1))
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+    ax.yaxis.set_major_locator(FixedLocator([0.0, 0.05, 0.10]))
+    ax.legend(fontsize=legend_fontsize, loc="upper center")
+
+    # ========== Under-approx error ==========
+    ax = axes[1,1]
+    ax.plot(angles_deg, rel_error_under, color=c_under, lw=2, label="Error curve")
+    ax.axhline(avg_error_under, color=c_under, linestyle="--", lw=1.2, alpha=0.7,
+               label=f"avg: {avg_error_under*100:.2f}%")
+    ax.axhline(max_error_under, color=c_under, linestyle=":", lw=1.2, alpha=0.7,
+               label=f"max: {max_error_under*100:.2f}%")
+    ax.set_xlim(0, 90)
+    ax.set_ylim(0, 0.1)
+    ax.set_xlabel(r"$\theta$ (°)", fontsize=13)
+    ax.set_title("Error", fontsize=13)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.axhline(0, color=c_gray, lw=0.8)
+    ax.yaxis.set_major_formatter(PercentFormatter(1))
+    ax.tick_params(axis='both', labelsize=tick_fontsize)
+    ax.yaxis.set_major_locator(FixedLocator([0.0, 0.05, 0.10]))
+    ax.legend(fontsize=legend_fontsize, loc="upper center")
+
+    plt.tight_layout()
+    plt.show()
+
+# Run
+plot_static_over_under_errors_quadrant()
+
+
+
+
 
 
 

@@ -60,7 +60,7 @@ def create_config(nn_type: str, algo: bool) -> SimpleNamespace:
     # Define a default set of parameters to be overwritten by Excel
     parameters_dict = {
         'sweep': False,
-        'test_system': 57,
+        'test_system': 300,
         'hidden_layer_size': 25,
         'n_hidden_layers': 3,
         'epochs': 1000,
@@ -102,6 +102,10 @@ def create_config(nn_type: str, algo: bool) -> SimpleNamespace:
         parameters_dict['hidden_layer_size'] = 50
         parameters_dict['learning_rate'] = 10e-4
         parameters_dict['batch_size'] = 50
+    elif n_buses == 300:
+        parameters_dict['hidden_layer_size'] = 75
+        parameters_dict['learning_rate'] = 10e-4
+        parameters_dict['batch_size'] = 75
         
     print("hidden layer size: ", parameters_dict['hidden_layer_size'], "learning rate: ", parameters_dict['learning_rate'], "batch size: ", parameters_dict['batch_size'])
         

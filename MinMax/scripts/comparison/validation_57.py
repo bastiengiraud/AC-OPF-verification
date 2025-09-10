@@ -47,7 +47,7 @@ from validation_support import solve_ac_opf_and_collect_data, load_and_prepare_v
 
 def create_config():
     parameters_dict = {
-        'test_system': 118,
+        'test_system': 57,
         'hidden_layer_size': 25,
         'n_hidden_layers': 3,
         'epochs': 1000,

@@ -390,6 +390,7 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     net = pc.from_mpc(case_path, casename_mpc_file=True)
     base_ppc = pc.to_ppc(net, init='flat') # Get initial PPC for OPF solves
     
+    
     # Extract constants from the base case
     Sbase = base_ppc['baseMVA']
     n_bus = base_ppc['bus'].shape[0]
@@ -406,21 +407,7 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     # Define load perturbation bounds (relative to nominal loads)
     lb_factor = 0.6 * np.ones(loads_nominal.shape[0])
     ub_factor = 1.0 * np.ones(loads_nominal.shape[0])
-
-    # Generate load scaling factors
-    np.random.seed(41)  # Set seed for reproducibility
-    X_factors = ls.kumaraswamymontecarlo(1.6, 2.8, 0.75, lb_factor, ub_factor, n_data_points)
-
-    # Calculate actual load values for each data point (MW/Mvar)
-    X_unscaled_loads_mw = loads_nominal * X_factors
-    X_loads_pu = X_unscaled_loads_mw / Sbase
-    x = X_loads_pu
-    X_nn_input = x.T
-
-    # Separate active and reactive power components for adjustment
-    pd_tot_mw_data = X_unscaled_loads_mw[:n_loads, :]           # [MW]
-    qd_tot_mvar_data = X_unscaled_loads_mw[n_loads:, :]         # [MVar]
-
+    
     # --- Initialize Output Tensors ---
     result_tensors = _initialize_result_tensors(n_bus, n_gens, n_branches, n_data_points)
     timing_tensor = torch.zeros(n_data_points, dtype=torch.float32)
@@ -451,89 +438,94 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         print("Warm-up complete. Starting timed data generation loop.")
     except Exception as e:
         print(f"Warning: Warm-up OPF failed. This may indicate a problem with the initial case. Error: {e}")
-        
-    # ============ stupid fix, for now doing OPFs first for time ================
-    print(f"Solving {n_data_points} AC-OPF problems with PYPOWER...")
-    for entry in tqdm(range(n_data_points), position=0, leave=True):
-        
-        #----------------- for pandamodels------------
-        current_net = copy.deepcopy(initial_net) # Deep copy the net for each iteration
-        
-        # Adjust loads in the current_net using pandapower syntax
-        # for load_idx_pp, bus_idx_pp_external in current_net.load['bus'].items():
-        #     current_net.load.loc[load_idx_pp, 'p_mw'] = pd_tot_mw_data[load_idx_pp, entry]
-        #     current_net.load.loc[load_idx_pp, 'q_mvar'] = qd_tot_mvar_data[load_idx_pp, entry]
-        
-        current_net.load['p_mw'] = pd_tot_mw_data[:, entry]
-        current_net.load['q_mvar'] = qd_tot_mvar_data[:, entry]
+    
+    count = 0
+    entry = 0
+    np.random.seed(41)  # Set seed for reproducibility
+    success_pandamodels = True
+    success_pypower = True
+    print(f"Solving {n_data_points} AC-OPF problems with PYPOWER (resampling if OPF fails)...")
 
+    while count < n_data_points:
+        current_ppc = copy.deepcopy(initial_ppc)  # Deep copy fresh case
+        current_net = copy.deepcopy(initial_net)
+        
+        # === Sample a new load profile ===
+        # Draw new factors (1 sample at a time)
+        X_factor = ls.kumaraswamymontecarlo(1.6, 2.8, 0.75, lb_factor, ub_factor, 1).flatten()
+        
+        pd_sample = pd_nom.flatten() * X_factor[:n_loads]
+        qd_sample = qd_nom.flatten() * X_factor[n_loads:]
+        
+        # Adjust loads in ppc
+        for load_idx_pp, bus_idx_pp_external in net.load['bus'].items():
+            ppc_bus_row_idx = external_to_ppc_row_idx.get(bus_idx_pp_external)
             
+            # with pypower
+            current_ppc['bus'][ppc_bus_row_idx, PD] = pd_sample[load_idx_pp]
+            current_ppc['bus'][ppc_bus_row_idx, QD] = qd_sample[load_idx_pp]
+            
+        # with powermodels
+        current_net.load['p_mw'] = pd_sample
+        current_net.load['q_mvar'] = qd_sample
+
+                
         solved_net, results_pm = None, None
         
-        # Run the OPF for timing
+        # Try solving OPF pandamodels
         try:           
             # ------------- with pandamodels ------------
             solved_net, results_pm = runpm_opf(current_net, pm_solver='ipopt')
+            success_pandamodels = True
             
         except Exception as e:
-            print(f"Warning: PYPOWER OPF failed for entry {entry}. Error: {e}. Storing zeros.")
-            success = False # Explicitly set to False if an exception occurs
+            print(f"OPF failed at attempt {entry}. Error: {e}. Resampling...")
+            success_pandamodels = False
             
-        timing_tensor[entry] = results_pm['solve_time']
-    
-    # ============ Data Generation Loop (using PYPOWER) ================
-    print(f"Solving {n_data_points} AC-OPF problems with PYPOWER...")
-    for entry in tqdm(range(n_data_points), position=0, leave=True):
-        current_ppc = copy.deepcopy(initial_ppc) # Make a deep copy for each iteration
-            
-        # ---------------- for pypower ------------------
-        # Adjust loads in the current_ppc
-        for load_idx_pp, bus_idx_pp_external in net.load['bus'].items():
-            # bus_idx_pp_external is the original bus ID from the .m file
-            ppc_bus_row_idx = external_to_ppc_row_idx.get(bus_idx_pp_external)
-            
-            if ppc_bus_row_idx is None:
-                # This warning might indicate a problem with your bus ID handling
-                # or if some loads are connected to buses not in the ppc (unlikely for valid cases).
-                print(f"Warning: Bus {bus_idx_pp_external} (from pandapower load {load_idx_pp}) "
-                      f"not found in PYPOWER bus matrix. Skipping load adjustment for this bus.")
-                continue
-            
-            # Adjust loads
-            current_ppc['bus'][ppc_bus_row_idx, PD] = pd_tot_mw_data[load_idx_pp, entry] # / Sbase (if you want pu)
-            current_ppc['bus'][ppc_bus_row_idx, QD] = qd_tot_mvar_data[load_idx_pp, entry] # / Sbase (if you want pu)
-        
-        # --- Time the OPF solve ---
-        start_time = time.perf_counter()
-        
-        # Run the OPF with PYPOWER
+        # Try solving OPF pandamodels
         try:
-            # -------------- with pypower -------------
             results = runopf(current_ppc, ppopt)
-            success = (results['success'] == 1)
+            success_pypower = (results['success'] == 1)
             
         except Exception as e:
-            print(f"Warning: PYPOWER OPF failed for entry {entry}. Error: {e}. Storing zeros.")
-            success = False # Explicitly set to False if an exception occurs
+            print(f"OPF failed at attempt {entry}. Error: {e}. Resampling...")
+            success_pypower = False
             
-        end_time = time.perf_counter()
         
-        # Store results or zeros if OPF did not converge/failed
-        if success:
-            _process_and_store_opf_results(results, Sbase, Ybus_dense, result_tensors, entry, external_to_ppc_row_idx)
-            
+        if success_pandamodels and success_pypower:
+            # Store results
+            _process_and_store_opf_results(results, Sbase, Ybus_dense, result_tensors, count, external_to_ppc_row_idx)
+            timing_tensor[count] = results_pm['solve_time']
+            # Also store loads (so they match nn_input!)
+            if count == 0:
+                X_nn_input = []
+                pd_tot_list = []
+                qd_tot_list = []
+            X_nn_input.append(np.hstack([pd_sample, qd_sample]) / Sbase)
+            pd_tot_list.append(pd_sample / Sbase)
+            qd_tot_list.append(qd_sample / Sbase)
+
+            count += 1
         else:
-            pass 
-        
+            # Don’t increment counter → resample in next loop
+            continue
+
+        entry += 1  # Just to track attempts (optional)
+
     # --- Post-processing: Remove slack bus generators ---
     result_tensors['pg_tot'] = _filter_generator_data(result_tensors['pg_tot'], base_ppc['bus'], base_ppc)
     result_tensors['qg_tot'] = _filter_generator_data(result_tensors['qg_tot'], base_ppc['bus'], base_ppc)
     
-    # Combine results into a dictionary for return
+    # After the OPF loop, convert lists → arrays
+    X_nn_input = np.vstack(X_nn_input)              # shape: (num_samples, 2*n_loads)
+    pd_tot_arr = np.vstack(pd_tot_list)             # shape: (num_samples, n_loads)
+    qd_tot_arr = np.vstack(qd_tot_list)             # shape: (num_samples, n_loads)
+
+    # Then convert to torch tensors
     solution_data = {
-        'nn_input': X_nn_input, 
-        'pd_tot': torch.tensor(pd_tot_mw_data / Sbase, dtype=torch.float32), # Convert to pu here
-        'qd_tot': torch.tensor(qd_tot_mvar_data / Sbase, dtype=torch.float32), # Convert to pu here
+        'nn_input': torch.tensor(X_nn_input, dtype=torch.float32),
+        'pd_tot': torch.tensor(pd_tot_arr.T, dtype=torch.float32),
+        'qd_tot': torch.tensor(qd_tot_arr.T, dtype=torch.float32),
         'solve_time': timing_tensor
     }
     solution_data.update(result_tensors) # Add all collected tensors    
@@ -541,6 +533,79 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     print(f"Finished solving {n_data_points} AC-OPF problems for case {n_buses}.")
     return solution_data
 
+
+# # ============ stupid fix, for now doing OPFs first for time ================
+#     print(f"Solving {n_data_points} AC-OPF problems with PYPOWER...")
+#     for entry in tqdm(range(n_data_points), position=0, leave=True):
+        
+#         #----------------- for pandamodels------------
+#         current_net = copy.deepcopy(initial_net) # Deep copy the net for each iteration
+        
+#         # Adjust loads in the current_net using pandapower syntax
+#         # for load_idx_pp, bus_idx_pp_external in current_net.load['bus'].items():
+#         #     current_net.load.loc[load_idx_pp, 'p_mw'] = pd_tot_mw_data[load_idx_pp, entry]
+#         #     current_net.load.loc[load_idx_pp, 'q_mvar'] = qd_tot_mvar_data[load_idx_pp, entry]
+        
+#         current_net.load['p_mw'] = pd_tot_mw_data[:, entry]
+#         current_net.load['q_mvar'] = qd_tot_mvar_data[:, entry]
+
+            
+#         solved_net, results_pm = None, None
+        
+#         # Run the OPF for timing
+#         try:           
+#             # ------------- with pandamodels ------------
+#             solved_net, results_pm = runpm_opf(current_net, pm_solver='ipopt')
+            
+#         except Exception as e:
+#             print(f"Warning: PYPOWER OPF failed for entry {entry}. Error: {e}. Storing zeros.")
+#             success = False # Explicitly set to False if an exception occurs
+            
+#         timing_tensor[entry] = results_pm['solve_time']
+    
+#     # ============ Data Generation Loop (using PYPOWER) ================
+#     print(f"Solving {n_data_points} AC-OPF problems with PYPOWER...")
+#     for entry in tqdm(range(n_data_points), position=0, leave=True):
+#         current_ppc = copy.deepcopy(initial_ppc) # Make a deep copy for each iteration
+            
+#         # ---------------- for pypower ------------------
+#         # Adjust loads in the current_ppc
+#         for load_idx_pp, bus_idx_pp_external in net.load['bus'].items():
+#             # bus_idx_pp_external is the original bus ID from the .m file
+#             ppc_bus_row_idx = external_to_ppc_row_idx.get(bus_idx_pp_external)
+            
+#             if ppc_bus_row_idx is None:
+#                 # This warning might indicate a problem with your bus ID handling
+#                 # or if some loads are connected to buses not in the ppc (unlikely for valid cases).
+#                 print(f"Warning: Bus {bus_idx_pp_external} (from pandapower load {load_idx_pp}) "
+#                       f"not found in PYPOWER bus matrix. Skipping load adjustment for this bus.")
+#                 continue
+            
+#             # Adjust loads
+#             current_ppc['bus'][ppc_bus_row_idx, PD] = pd_tot_mw_data[load_idx_pp, entry] # / Sbase (if you want pu)
+#             current_ppc['bus'][ppc_bus_row_idx, QD] = qd_tot_mvar_data[load_idx_pp, entry] # / Sbase (if you want pu)
+        
+#         # --- Time the OPF solve ---
+#         start_time = time.perf_counter()
+        
+#         # Run the OPF with PYPOWER
+#         try:
+#             # -------------- with pypower -------------
+#             results = runopf(current_ppc, ppopt)
+#             success = (results['success'] == 1)
+            
+#         except Exception as e:
+#             print(f"Warning: PYPOWER OPF failed for entry {entry}. Error: {e}. Storing zeros.")
+#             success = False # Explicitly set to False if an exception occurs
+            
+#         end_time = time.perf_counter()
+        
+#         # Store results or zeros if OPF did not converge/failed
+#         if success:
+#             _process_and_store_opf_results(results, Sbase, Ybus_dense, result_tensors, entry, external_to_ppc_row_idx)
+            
+#         else:
+#             pass 
 
     
     
@@ -1359,9 +1424,14 @@ def print_comparison_table(
                 # convert to mean
                 if isinstance(proxy_value, torch.Tensor):
                     proxy_value = torch.mean(proxy_value).item()
+                elif isinstance(proxy_value, list):
+                    proxy_value = sum(proxy_value) / len(proxy_value)
+                    
                 if isinstance(real_value, torch.Tensor):
                     real_value = torch.mean(real_value).item()
-
+                elif isinstance(real_value, list):
+                    real_value = sum(real_value) / len(real_value)
+ 
                 if proxy_value != 'N/A' and real_value != 'N/A':
                     metric_values[k] = f"{proxy_value:.2f}s ({real_value:.2f} s)"
                 else:
@@ -1570,7 +1640,7 @@ def power_nn_projection(net, num_samples, solution_data_dict, pg_targets, vm_tar
         pgvm_projection, result_pm                      = runpm_opf(pp_net_power_proj) # pm_model = "ACPowerModel"
             
         pgvm_projected_results               = extract_solution_data_from_pandapower_net(pgvm_projection, sample, num_samples)
-        pgvm_projected_results['solve_time']       = result_pm['solve_time']
+        pgvm_projected_results['solve_time']       = [result_pm['solve_time']]
         all_projected_results_list.append(pgvm_projected_results)
 
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1620,7 +1690,7 @@ def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_tar
         pgvm_warm_start, result_pm                      = runpm_opf(pp_net_power_ws)
         
         pgvm_ws_results                      = extract_solution_data_from_pandapower_net(pgvm_warm_start, sample, num_samples)
-        pgvm_ws_results['solve_time']              = result_pm['solve_time']
+        pgvm_ws_results['solve_time']              = [result_pm['solve_time']]
         all_projected_results_list.append(pgvm_ws_results)
 
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1671,7 +1741,7 @@ def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_t
         vrvi_projection, result_pm                      = runpm_opf(pp_net_voltage_proj) # pm_model = "ACPowerModel"
         
         vrvi_projected_results               = extract_solution_data_from_pandapower_net(vrvi_projection, sample, num_samples)
-        vrvi_projected_results['solve_time']       = result_pm['solve_time']
+        vrvi_projected_results['solve_time']       = [result_pm['solve_time']]
         all_projected_results_list.append(vrvi_projected_results)
         
     final_projected_results = merge_solution_dicts(all_projected_results_list)
@@ -1721,7 +1791,7 @@ def voltage_nn_warm_start(net, num_samples, solution_data_dict, vr_targets, vi_t
         vrvi_warm_start, result_pm                      = runpm_opf(pp_net_voltage_ws)
           
         vrvi_ws_results                      = extract_solution_data_from_pandapower_net(vrvi_warm_start, sample, num_samples)
-        vrvi_ws_results['solve_time']              = result_pm['solve_time']
+        vrvi_ws_results['solve_time']              = [result_pm['solve_time']]
         all_projected_results_list.append(vrvi_ws_results)
         
     final_projected_results = merge_solution_dicts(all_projected_results_list)

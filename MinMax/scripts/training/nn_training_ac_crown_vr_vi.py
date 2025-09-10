@@ -39,17 +39,17 @@ def train(config):
     simulation_parameters['nn_output'] = 'vr_vi'
     project_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
-    # get labels for generators
+    # # get labels for generators
     simulation_parameters_gens = simulation_parameters.copy()
     simulation_parameters_gens['nn_output'] = 'pg_vm'
     act_gen_indices = simulation_parameters['true_system']['pg_active']
     num_act_gens = len(act_gen_indices)
     n_gens = simulation_parameters['general']['n_gbus']
-    _, pgvm_train = create_data(simulation_parameters=simulation_parameters_gens)
-    pgvm_train = torch.tensor(pgvm_train[:, :num_act_gens]).float().to(device)
+    # _, pgvm_train = create_data(simulation_parameters=simulation_parameters_gens)
+    # pgvm_train = torch.tensor(pgvm_train[:, :num_act_gens]).float().to(device)
 
     # Training Data
-    sd_train, vrvi_train = create_data(simulation_parameters=simulation_parameters)
+    sd_train, vrvi_train = create_data(simulation_parameters=simulation_parameters)    
     sd_train = torch.tensor(sd_train).float().to(device)
     n_loads = sd_train.shape[1] // 2
     vrvi_train = torch.tensor(vrvi_train).float().to(device)
@@ -118,8 +118,8 @@ def train(config):
 
     # Test Data
     sd_test, vrvi_test = create_test_data(simulation_parameters=simulation_parameters)
-    _, pgvm_test = create_test_data(simulation_parameters=simulation_parameters_gens)
-    pgvm_test = torch.tensor(pgvm_test[:, :num_act_gens]).float().to(device)
+    # _, pgvm_test = create_test_data(simulation_parameters=simulation_parameters_gens)
+    # pgvm_test = torch.tensor(pgvm_test[:, :num_act_gens]).float().to(device)
     sd_test = torch.tensor(sd_test).float().to(device)
     vrvi_test = torch.tensor(vrvi_test).float().to(device)
     
@@ -169,7 +169,7 @@ def train(config):
     InputNN_total = sd_train.clone()
     OutputNN_total = vrvi_train.clone()
     typNN_total = vrvi_train_typ.clone()
-    pg_total = pgvm_train.clone()
+    # pg_total = pgvm_train.clone()
 
 
     for epoch in range(config.epochs):
@@ -189,10 +189,10 @@ def train(config):
         InputNN = InputNN_total[idx]
         OutputNN = OutputNN_total[idx]
         typNN = typNN_total[idx]
-        pg_target = pg_total[idx]
+        # pg_target = pg_total[idx]
 
         start_time = time.time()
-        mse_criterion, training_loss = train_epoch(network_gen, InputNN, OutputNN, typNN, pg_target, optimizer, config, simulation_parameters, epoch) 
+        mse_criterion, training_loss = train_epoch(network_gen, InputNN, OutputNN, typNN, optimizer, config, simulation_parameters, epoch) 
         validation_loss = validate_epoch(network_gen, sd_test, vrvi_test)
         training_time = time.time() - start_time    
         
@@ -529,7 +529,7 @@ def validate_epoch(network_gen, sd_test, vrvi_test):
     return criterion(output, vrvi_test)
 
 
-def train_epoch(network_gen, sd_train, vrvi_train, typ, pg_target, optimizer, config, simulation_parameters, epoch):
+def train_epoch(network_gen, sd_train, vrvi_train, typ, optimizer, config, simulation_parameters, epoch):
     torch.autograd.set_detect_anomaly(True)
 
     network_gen.train()
@@ -592,7 +592,7 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, pg_target, optimizer, co
         slce = get_slice(i, config.batch_size)
         Gen_output = network_gen.forward_train(sd_train[slce])
         Gen_target = vrvi_train[slce]
-        pg_batch = pg_target[slce]
+        # pg_batch = pg_target[slce]
         
         # Compute magnitude from surrogate 
         Ibr =  Gen_output @ Ybr_rect.T 
@@ -658,7 +658,7 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, pg_target, optimizer, co
             
             pg_pred = pg[:, pv_buses_nz]
             
-            mse_gen = criterion(pg_pred, pg_batch)  
+            # mse_gen = criterion(pg_pred, pg_batch)  
             
             gen_violation_loss = config.pg_viol_weight * (
                 torch.mean(upper_gen_violation ** 2) + torch.mean(lower_gen_violation ** 2)

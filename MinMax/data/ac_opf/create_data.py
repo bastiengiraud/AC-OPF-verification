@@ -39,9 +39,12 @@ def create_data(simulation_parameters):
     data_dir = os.path.join(base_dir, f'ac_opf_data/{n_buses}')
     output_dir = os.path.join(data_dir, f'Dataset')
     
-    
-    L_Val = pd.read_csv(os.path.join(output_dir, f'NN_input_{nn_config}.csv'), header=None).to_numpy()[s_point:s_point+n_data_points][:] 
-    Gen_out = pd.read_csv(os.path.join(output_dir, f'NN_output_{nn_config}.csv'), header=None).to_numpy()[s_point:s_point+n_data_points][:]
+    if n_buses == 300:
+        L_Val = pd.read_csv(os.path.join(output_dir, f'NN_input_{nn_config}.csv'), skiprows=1,low_memory=False, header=None).to_numpy()[s_point:s_point+n_data_points][:] 
+        Gen_out = pd.read_csv(os.path.join(output_dir, f'NN_output_{nn_config}.csv'), skiprows=1,low_memory=False, header=None).to_numpy()[s_point:s_point+n_data_points][:]
+    else:
+        L_Val = pd.read_csv(os.path.join(output_dir, f'NN_input_{nn_config}.csv'), header=None).to_numpy()[s_point:s_point+n_data_points][:] 
+        Gen_out = pd.read_csv(os.path.join(output_dir, f'NN_output_{nn_config}.csv'), header=None).to_numpy()[s_point:s_point+n_data_points][:]
     
     #L_Val=pd.read_csv('verify-powerflow/dc_opf_data/'+str(n_buses)+'/NN_input_actual.csv').to_numpy()[s_point:s_point+n_data_points][:] 
     #Gen_out = pd.read_csv('verify-powerflow/dc_opf_data/'+str(n_buses)+'/NN_output_actual.csv').to_numpy()[s_point:s_point+n_data_points][:]
@@ -66,10 +69,13 @@ def create_test_data(simulation_parameters):
     data_dir = os.path.join(base_dir, f'ac_opf_data/{n_buses}')
     output_dir = os.path.join(data_dir, f'Dataset')
     
-
-    L_Val = pd.read_csv(os.path.join(output_dir, f'NN_input_{nn_config}.csv'), header=None).to_numpy()[s_point+n_data_points:s_point+n_total][:]
-    Gen_out = pd.read_csv(os.path.join(output_dir, f'NN_output_{nn_config}.csv'), header=None).to_numpy()[s_point+n_data_points:s_point+n_total][:]
-    
+    if n_buses == 300:
+        L_Val = pd.read_csv(os.path.join(output_dir, f'NN_input_{nn_config}.csv'), skiprows=1,low_memory=False, header=None).to_numpy()[s_point+n_data_points:s_point+n_total][:]
+        Gen_out = pd.read_csv(os.path.join(output_dir, f'NN_output_{nn_config}.csv'), skiprows=1,low_memory=False, header=None).to_numpy()[s_point+n_data_points:s_point+n_total][:]
+    else:
+        L_Val = pd.read_csv(os.path.join(output_dir, f'NN_input_{nn_config}.csv'), header=None).to_numpy()[s_point+n_data_points:s_point+n_total][:]
+        Gen_out = pd.read_csv(os.path.join(output_dir, f'NN_output_{nn_config}.csv'), header=None).to_numpy()[s_point+n_data_points:s_point+n_total][:]   
+        
     #L_Val=pd.read_csv('verify-powerflow/dc_opf_data/'+str(n_buses)+'/NN_input_actual.csv').to_numpy()[s_point+n_data_points:s_point+n_total][:]
     #Gen_out = pd.read_csv('verify-powerflow/dc_opf_data/'+str(n_buses)+'/NN_output_actual.csv').to_numpy()[s_point+n_data_points:s_point+n_total][:]
         
@@ -420,7 +426,7 @@ def generate_power_system_data(simulation_parameters, save_csv=True, append_data
 
     n_buses = general_params['n_buses']
     n_gbus = general_params['n_gbus'] # Number of generators
-    n_data_points = 4_000 # data_creation_params['n_data_points']
+    n_data_points = 10_000 # data_creation_params['n_data_points']
     
     # ============= specify pglib-opf case based on n_buses ==================
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
@@ -633,7 +639,22 @@ def _process_and_save_data(X_loads_all, pg_np, qg_np, vm_np, vr_tot, vi_tot, sim
     """
     n_buses = simulation_parameters['general']['n_buses']
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    case_name = f'pglib_opf_case{n_buses}_ieee.m' # Placeholder for case name
+    
+    if n_buses == 14:
+        case_name = 'pglib_opf_case14_ieee.m'
+    elif n_buses == 57:
+        case_name = 'pglib_opf_case57_ieee.m'
+    elif n_buses == 118:
+        case_name = 'pglib_opf_case118_ieee.m'
+    elif n_buses == 300:
+        case_name = 'pglib_opf_case300_ieee.m'
+    elif n_buses == 793:
+        case_name = 'pglib_opf_case793_goc.m'
+    elif n_buses == 1354:
+        case_name = 'pglib_opf_case1354_pegase.m'
+    elif n_buses == 2869:
+        case_name = 'pglib_opf_case2869_pegase.m'
+    
     case_path = os.path.join(base_dir, 'pglib-opf', case_name)
     net = pc.from_mpc(case_path, casename_mpc_file=True)
     base_ppc = pc.to_ppc(net, init = 'flat')
@@ -700,25 +721,27 @@ if __name__ == "__main__":
     
     from data.ac_opf.create_example_parameters import create_example_parameters
 
-    test_n_buses = 300 # Example: for a 6-bus system
+    test_n_buses = 793 # Example: for a 6-bus system
     
     # Check if data_dir for parameters exists before attempting to load
     current_script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     param_data_dir = os.path.join(current_script_dir, f'ac_opf_data/{test_n_buses}')
     
+    # Create directory if it does not exist
     if not os.path.exists(param_data_dir):
-        print(f"Error: Parameter data directory not found: {param_data_dir}")
-        print("Please ensure you have the correct CSV files ")
-        print(f"in a folder named ac_opf_data/{test_n_buses} relative to this script.")
+        os.makedirs(param_data_dir, exist_ok=True)
+        print(f"Created missing directory: {param_data_dir}")
     else:
-        # 1. Create/Load simulation parameters (from your provided function)
-        simulation_params = create_example_parameters(test_n_buses)
+        print(f"Directory already exists: {param_data_dir}")
+        
+    # 1. Create/Load simulation parameters (from your provided function)
+    simulation_params = create_example_parameters(test_n_buses)
 
-        # 2. Generate training data using the new function
-        generate_power_system_data(simulation_params, save_csv=True, append_data=True)
-        # X_train_data, Y_train_data = generate_power_system_data(simulation_params)
+    # 2. Generate training data using the new function
+    generate_power_system_data(simulation_params, save_csv=True, append_data=True)
+    # X_train_data, Y_train_data = generate_power_system_data(simulation_params)
 
-        # print("\nGenerated Training Data Shapes:")
-        # print(f"Scaled Load Profiles (X_train_data): {X_train_data.shape}")
-        # print(f"Generator Dispatches (Y_train_data): {Y_train_data.shape}")
+    # print("\nGenerated Training Data Shapes:")
+    # print(f"Scaled Load Profiles (X_train_data): {X_train_data.shape}")
+    # print(f"Generator Dispatches (Y_train_data): {Y_train_data.shape}")
 
