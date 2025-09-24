@@ -76,7 +76,7 @@ def train(config):
     output_delta = torch.vstack((gen_delta, volt_delta))
     num_gen_nn = len(gen_delta)
     
-    dem_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float().to(device)
+    dem_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float().to(device) / 100
     dem_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float().to(device) / 100
     
     # sampling bounds
@@ -128,6 +128,15 @@ def train(config):
     # Reshape and convert to float tensors for CROWN
     x_min = x_min.reshape(1, -1).clone().detach().float()
     x_max = x_max.reshape(1, -1).clone().detach().float()
+    
+    if torch.any(x_max < x_min):
+        # Handle the error or log a warning
+        print("Warning: x_max is smaller than x_min in some dimensions. Correcting...")
+        # A robust way to ensure valid bounds is to use torch.min/max
+        temp_min = torch.min(x_min, x_max)
+        temp_max = torch.max(x_min, x_max)
+        x_min = temp_min
+        x_max = temp_max
 
     # Calculate the center of the new interval
     x = (x_min + x_max) / 2

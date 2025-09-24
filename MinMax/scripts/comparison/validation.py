@@ -48,7 +48,7 @@ from validation_support import solve_ac_opf_and_collect_data, load_and_prepare_v
 def create_config():
     parameters_dict = {
         'test_system': 118,
-        'hidden_layer_size': 25,
+        'hidden_layer_size': 50,
         'n_hidden_layers': 3,
         'epochs': 1000,
         'batch_size': 50,
@@ -118,7 +118,7 @@ def main(only_violations):
     net = simulation_parameters['pp_net']
     
     # solve some AC-OPFs for reference
-    num_solves = 1000
+    num_solves = 100
 
     print(f"Starting data generation for case {n_buses} with {num_solves} OPF solves...")
     solution_data_dict = solve_ac_opf_and_collect_data(n_buses, num_solves)

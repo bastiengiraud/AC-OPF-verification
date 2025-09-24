@@ -148,7 +148,7 @@ def create_example_parameters(n_buses: int):
     Pd_delta = Pd_max_loads - Pd_min
     Pd_min = Pd_min.reshape((n_lbus, 1))
     Pd_delta = Pd_delta.reshape((n_lbus, 1))
-    Qd_min = np.zeros_like(Qd_max_loads)  # or 0.9 * Qd_max_loads etc.
+    Qd_min = np.zeros_like(Qd_max_loads)  
     Qd_delta = Qd_max_loads - Qd_min
     
     # Stack real and reactive parts if needed

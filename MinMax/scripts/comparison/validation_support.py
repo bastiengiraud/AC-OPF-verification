@@ -2009,7 +2009,8 @@ def runpm_opf(net, pp_to_pm_callback=None, calculate_voltage_angles=True,
                      correct_pm_network_data=correct_pm_network_data, silence=silence, pm_time_limits=pm_time_limits,
                      pm_log_level=pm_log_level, opf_flow_lim=opf_flow_lim, pm_tol=pm_tol)
 
-    net, result_pm = _runpm(net, delete_buffer_file=delete_buffer_file, pm_file_path=pm_file_path, pdm_dev_mode=pdm_dev_mode)
+    # net, result_pm = _runpm(net, delete_buffer_file=delete_buffer_file, pm_file_path=pm_file_path, pdm_dev_mode=pdm_dev_mode)
+    net, result_pm = _runpm_in_memory(net, pdm_dev_mode=pdm_dev_mode, **kwargs)
     
     return net, result_pm
 
@@ -2069,6 +2070,87 @@ def _call_pandamodels(buffer_file, julia_file, dev_mode):
         Pkg.activate() # Return to default Julia environment after dev run
         
     return result_pm
+
+
+
+"""
+Functions below modified from: https://github.com/e2nIEE/pandapower/blob/develop/pandapower/converter/pandamodels/to_pm.py
+Instead of dumping to a file, we dump to an in-memory string.
+This improves efficiency on HPC systems by avoiding disk I/O.
+"""
+
+class NumpyEncoder(json.JSONEncoder):
+    """
+    JSON encoder that handles NumPy data types by converting them to standard Python types.
+    This is necessary for json.dumps() to work correctly with pandapower's data structures.
+    """
+    def default(self, obj):
+        if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
+                            np.int16, np.int32, np.int64, np.uint8,
+                            np.uint16, np.uint32, np.uint64)):
+            return int(obj)
+        elif isinstance(obj, (np.float64, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.complex128, np.complex64)):
+            return {'real': obj.real, 'imag': obj.imag}
+        elif isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+        elif isinstance(obj, (np.bool_)):
+            return bool(obj)
+        elif isinstance(obj, (np.void)):
+            return None
+        return json.JSONEncoder.default(self, obj)
+
+def dump_pm_json_to_memory(pm):
+    """
+    Serializes a PowerModels dictionary to a JSON string in memory
+    using the correct encoder for NumPy types.
+    """
+    logger.debug("serializing PowerModels data structure to a JSON string in memory")
+    return json.dumps(pm, indent=4, sort_keys=True, cls=NumpyEncoder)
+
+
+
+def _runpm_in_memory(net, pdm_dev_mode=False, **kwargs):
+    """
+    Converts the pandapower net to a PowerModels dictionary, and sends the
+    data to PandaModels.jl via pyjulia using an in-memory JSON string.
+    This completely avoids all disk I/O.
+    """
+    if not all([jl, Main, Pkg, Base]):
+        raise RuntimeError("Julia and PandaModels have not been set up. Please call `setup_julia_and_pandamodels()` once before calling this function.")
+
+    # 1. Convert pandapower net to a PowerModels dictionary in Python memory
+    net, pm, ppc, ppci = convert_to_pm_structure(net, **kwargs)
+    _add_custom_targets_to_pm_in_place(net, ppci, pm)
+    if net._options["pp_to_pm_callback"] is not None:
+        net._options["pp_to_pm_callback"](net, ppci, pm)
+
+    # 2. Serialize the dictionary to a JSON string in memory
+    pm_json_string = dump_pm_json_to_memory(pm)
+
+    # 3. Call the Julia function with the in-memory JSON string
+    logger.debug("Starting in-memory call to Julia.")
+    
+    # We pass the JSON string directly to Julia's Main module.
+    # Julia's run function must now accept a string.
+    Main.in_memory_json_string = pm_json_string
+    # The Julia function will now take this string as input
+    result_pm = Main.eval(net._options["julia_file"] + "(Main.in_memory_json_string)")
+    
+    logger.info("Optimization ('"+net._options["julia_file"]+"') " +
+                "is finished in %s seconds:" % round(result_pm["solve_time"], 2))
+    
+    # read results and write back to net
+    try:
+        read_pm_results_to_net(net, ppc, ppci, result_pm)
+    except OPFNotConverged as e:
+        raise e
+    except Exception as e:
+        raise e
+    
+    return net, result_pm
+
 
 
 

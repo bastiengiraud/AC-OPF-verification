@@ -87,8 +87,13 @@ simulation_parameters = create_example_parameters(config.test_system)
 n_buses = config.test_system
 n_gens = simulation_parameters['general']['n_gbus']
 
+
+
+
+
+
 # limits
-sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float() 
+sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float() / 100
 sd_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float() / 100
 vmag_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float()
 vmag_min = torch.zeros_like(vmag_max) + 0.94
@@ -107,15 +112,14 @@ gen_mask_to_keep = ~pg_max_zero_mask  # invert mask to keep desired generators
 
 map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32)
 sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32)
-pg_max_gens = sg_max[:n_gens, :][gen_mask_to_keep.squeeze()] / 100 # (sg_max.T @ map_g)[:, :n_buses]
+pg_max_gens = (sg_max[:n_gens, :][gen_mask_to_keep.squeeze()] / 100).squeeze() # (sg_max.T @ map_g)[:, :n_buses]
 
 pg_max_for_mask = (sg_max.T @ map_g)[:, :n_buses]
 # qg_max = (sg_max.T @ map_g)[:, n_buses:]
 
 gen_bus_mask = (pg_max_for_mask > 0)
 
-num_gen_nn = len(gen_mask_to_keep)
-
+num_gen_nn = len(pg_max_gens)
 
 
 def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_min, pg_max, qg_min, qg_max, vmag_min, vmag_max, imag_max_tot):
@@ -197,6 +201,13 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
         x_min = x_min.reshape(1, -1).clone().detach().float()
         x_max = x_max.reshape(1, -1).clone().detach().float()
         input_dim = len(x_min[0])
+        
+        if torch.any(x_max < x_min):
+            print("Warning: x_max is smaller than x_min in some dimensions. Correcting...")
+            temp_min = torch.min(x_min, x_max)
+            temp_max = torch.max(x_min, x_max)
+            x_min = temp_min
+            x_max = temp_max
 
         # Calculate the center of the new interval
         x = (x_min + x_max) / 2
@@ -219,8 +230,60 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 model_type = 'vr_vi'
                 output_dim = 2*n_buses
                 nn_model = load_weights(config, model_type, name, input_dim = input_dim, num_classes = output_dim)
-                print(nn_model)
+                # print(nn_model)
                 
+                if 'False' in name:
+                    print("Model trained without McCormick Envelopes.")
+                
+                    # get bounds on voltages and currents for mccormick False.
+                    vr_model = BoundedModule(OutputWrapper(nn_model, 0), torch.empty_like(x), optimize_bound_args)
+                    lb_vr, ub_vr = vr_model.compute_bounds(x=(image,), method="alpha-CROWN")
+                    
+                    if torch.any(ub_vr < lb_vr):
+                        print("Warning: ub_vr is smaller than lb_vr in some dimensions. Correcting...")
+                        temp_min = torch.min(lb_vr, ub_vr)
+                        temp_max = torch.max(lb_vr, ub_vr)
+                        lb_vr = temp_min
+                        ub_vr = temp_max
+                    
+                    vi_model = BoundedModule(OutputWrapper(nn_model, 1), torch.empty_like(x), optimize_bound_args)
+                    lb_vi, ub_vi = vi_model.compute_bounds(x=(image,), method="alpha-CROWN")
+                    
+                    # Check if upper bound is less than lower bound and correct it
+                    if torch.any(ub_vi < lb_vi):
+                        print("Warning: ub_vi was less than lb_vi. Bounds were swapped.")
+                        temp_min = torch.min(lb_vi, ub_vi)
+                        temp_max = torch.max(lb_vi, ub_vi)
+                        lb_vi = temp_min
+                        ub_vi = temp_max
+                    
+                    ir_model = BoundedModule(OutputWrapper(nn_model, 2), torch.empty_like(x), optimize_bound_args)
+                    lb_ir, ub_ir = ir_model.compute_bounds(x=(image,), method="alpha-CROWN")
+                    
+                    if torch.any(ub_ir < lb_ir):
+                        print("Warning: ub_ir was less than lb_ir. Bounds were swapped.")
+                        temp_min = torch.min(lb_ir, ub_ir)
+                        temp_max = torch.max(lb_ir, ub_ir)
+                        lb_ir = temp_min
+                        ub_ir = temp_max
+                    
+                    ii_model = BoundedModule(OutputWrapper(nn_model, 3), torch.empty_like(x), optimize_bound_args)
+                    lb_ii, ub_ii = ii_model.compute_bounds(x=(image,), method="alpha-CROWN")
+                    
+                    if torch.any(ub_ii < lb_ii):
+                        print("Warning: ub_ii was less than lb_ii. Bounds were swapped.")
+                        temp_min = torch.min(lb_ii, ub_ii)
+                        temp_max = torch.max(lb_ii, ub_ii)
+                        lb_ii = temp_min
+                        ub_ii = temp_max
+                    
+                    # update worst-case mccormick bounds
+                    nn_model.pinj_upper_nn.update_mccormick_bounds(lb_vr, ub_vr, lb_vi, ub_vi, lb_ir, ub_ir, lb_ii, ub_ii)
+                    nn_model.qinj_upper_nn.update_mccormick_bounds(lb_vr, ub_vr, lb_vi, ub_vi, lb_ir, ub_ir, lb_ii, ub_ii)
+                    nn_model.pinj_lower_nn.update_mccormick_bounds(lb_vr, ub_vr, lb_vi, ub_vi, lb_ir, ub_ir, lb_ii, ub_ii)
+                    nn_model.qinj_lower_nn.update_mccormick_bounds(lb_vr, ub_vr, lb_vi, ub_vi, lb_ir, ub_ir, lb_ii, ub_ii)         
+                    
+
                 # Check upper generator real power violation
                 pg_up_model = BoundedModule(OutputWrapper(nn_model, 7), torch.empty_like(x), optimize_bound_args)
                 _, ub = pg_up_model.compute_bounds(x=(image,), method="alpha-CROWN")
@@ -237,6 +300,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 
                 metrics['Pg tot Max Violation'] = torch.max(torch.cat([upper_pg_violation[gen_bus_mask], lower_pg_violation[gen_bus_mask]])).item()
                 metrics['Pg tot Avg Violation'] = torch.mean(torch.cat([upper_pg_violation[gen_bus_mask], lower_pg_violation[gen_bus_mask]])).item()
+                
                 
                 ######################################################
                 # try verifying individually instead of vectorized ###
@@ -297,6 +361,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 metrics['Qg tot Max Violation'] = torch.max(torch.cat([upper_qg_violation[gen_bus_mask], lower_qg_violation[gen_bus_mask]])).item()
                 metrics['Qg tot Avg Violation'] = torch.mean(torch.cat([upper_qg_violation[gen_bus_mask], lower_qg_violation[gen_bus_mask]])).item()
                 
+                
                 # Check upper current magnitude violation
                 imag_up_model = BoundedModule(OutputWrapper(nn_model, 4), torch.empty_like(x), optimize_bound_args)
                 _, ub = imag_up_model.compute_bounds(x=(image,), method="backward")
@@ -313,6 +378,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 
                 metrics['Vmg Up Max Violation'] = vmag_up_violation[gen_bus_mask].max().item()
                 metrics['Vmg Up Avg Violation'] = vmag_up_violation[gen_bus_mask].mean().item()
+                
 
                 # Check lower voltage magnitude violation
                 vmag_down_model = BoundedModule(OutputWrapper(nn_model, 6), torch.empty_like(x), optimize_bound_args)
@@ -337,12 +403,14 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 lb_r, ub_r = inj_real_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 lb_i, ub_i = inj_imag_model.compute_bounds(x=(image,), method="alpha-CROWN")
                 
+                # the way this is computed gives an extremely loose bound
                 worst_case_inj_real = torch.max(lb_r**2, ub_r**2)
                 worst_case_inj_imag = torch.max(lb_i**2, ub_i**2)
                 inj_violation = torch.sqrt(worst_case_inj_real + worst_case_inj_imag)
                 
                 metrics['Ibal tot Max Violation'] = inj_violation.max().item()
                 metrics['Ibal tot Avg Violation'] = inj_violation.mean().item()
+
                 
             elif 'pg_vm' in name:
                 model_type = 'pg_vm'
@@ -383,6 +451,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 vmag_up_violation = torch.relu(ub_vg - vmag_max)
                 metrics['Vmg Up Max Violation'] = vmag_up_violation.max().item()
                 metrics['Vmg Up Avg Violation'] = vmag_up_violation.mean().item()
+                
                 
                 metrics['Vmg tot Max Violation'] = torch.max(torch.cat([vmag_up_violation, vmag_down_violation])).item()
                 metrics['Vmg tot Avg Violation'] = torch.mean(torch.cat([vmag_up_violation, vmag_down_violation])).item()
@@ -520,7 +589,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
 
 
 
-deltas = [0.0, 0.04, 0.08, 0.12, 0.16, 0.199] # , 0.08, 0.12, 0.16, 0.18
+deltas = [0.0, 0.04, 0.08, 0.12, 0.16, 0.199] # , 0.0, 0.04, 0.08, 0.12, 0.16, 0.199
 verify_and_save_to_excel(store_excel=True, n_buses=n_buses, deltas=deltas, 
                              sd_min=sd_min, sd_delta=sd_delta, 
                              pg_min=pg_min, pg_max=pg_max, 

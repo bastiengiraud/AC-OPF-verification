@@ -23,7 +23,7 @@ excel_files = [
 ]
 
 # Deltas must be consistent across files
-deltas = [0.04, 0.08, 0.12, 0.16, 0.199]  
+deltas = [0.0, 0.04, 0.08, 0.12, 0.16, 0.199]  
 
 # --- Helper: Load results ---
 def load_results(filepath):
@@ -104,11 +104,12 @@ def plot_group(excel_files, group_name, save_name, model_filter):
         ax = axes[i]
         for model in model_names:
             model_data = df[[col for col in df.columns if col.startswith(model)]]
-            model_data.columns = deltas
+            model_data.columns = deltas            
 
             for metric in metrics_to_plot:
                 if metric in model_data.index:
                     series = model_data.loc[metric, :]
+
                     # Skip plotting if all values are NaN or 0
                     color = metric_colors.get(metric, None)  # consistent metric color
 

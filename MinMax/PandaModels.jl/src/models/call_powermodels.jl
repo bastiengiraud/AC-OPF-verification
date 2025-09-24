@@ -27,7 +27,13 @@ end
 
 function run_powermodels_opf_custom(json_path)
     println("--- PandaModels.jl: run_powermodels_opf called! ---")
-    pm = _PdM.load_pm_from_json(json_path)
+
+    # 1. Create an in-memory IOBuffer from the string.
+    io_buffer = IOBuffer(json_path)
+    # 2. Parse the JSON data from this in-memory buffer, not from a file.
+    pm = PowerModels.parse_json(io_buffer)
+
+    #pm = _PdM.load_pm_from_json(json_path)
     active_powermodels_silence!(pm)
     pm = remove_extract_params!(pm)
 
