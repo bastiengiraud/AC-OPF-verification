@@ -1,17 +1,19 @@
 # AC Verification
 
-**Minimizing worst-case violations of neural networks for AC Optimal Power Flow during training**
+**Minimizing worst-case violations of neural networks for AC Optimal Power Flow during training.**
+
+Read our paper now on [arXiv](https://arxiv.org/pdf/2510.23196)!
 
 ## 🔍 Overview
 
-This repository contains the code for the **AC Verification** project, which focuses on **verification and worst-case analysis of neural networks applied to AC Optimal Power Flow (AC-OPF)** problems.
+This repository contains the code for the **AC Verification** project, which focuses on **minimizing worst-case violations of neural networks for AC Optimal Power Flow (AC-OPF) during training**.
 
 The project includes two main components:
 
-- **MinMax:** Core logic for training neural networks using min–max and worst-case–aware objectives.
-- **Verification:** Core logic for post-training verification and robustness analysis.
+- **MinMax:** Core logic for training neural networks and minimizing worst-case violations during training.
+- **Verification:** Core logic for neural network verification.
 
-The emphasis is on **training-time guarantees**, robustness, and worst-case behavior of neural network surrogates for power system optimization.
+The emphasis is on **minimizing worst-case violations during training** to increase trustworthiness of AC-OPF proxies.
 
 ---
 
