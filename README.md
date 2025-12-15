@@ -1,8 +1,8 @@
-# AC Verification
+# Neural Network Verification of AC-OPF Proxies
 
 **Minimizing worst-case violations of neural networks for AC Optimal Power Flow during training.**
 
-Read our paper now on [arXiv](https://arxiv.org/pdf/2510.23196)!
+For the first time, we verify all AC-OPF constraints of an AC-OPF proxy and minimize all worst-case violations during training. Read our paper now on [arXiv](https://arxiv.org/pdf/2510.23196)!
 
 ## 🔍 Overview
 
