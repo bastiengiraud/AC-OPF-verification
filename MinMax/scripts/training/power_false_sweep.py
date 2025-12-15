@@ -58,6 +58,10 @@ def create_config(test_system):
         parameters_dict['hidden_layer_size'] = 75
         parameters_dict['learning_rate'] = 10e-4
         parameters_dict['batch_size'] = 75
+    elif test_system == 793:
+        parameters_dict['hidden_layer_size'] = 100
+        parameters_dict['learning_rate'] = 20e-4
+        parameters_dict['batch_size'] = 100
         
     
     config = SimpleNamespace(**parameters_dict)
@@ -172,7 +176,7 @@ def main_hyperparameter_tuning(test_system):
 
 
 if __name__ == '__main__':
-    systems = [300] # [57, 118]
+    systems = [793] # [57, 118]
     # if hyperparameter tuning
     for system in systems:
         main_hyperparameter_tuning(system)

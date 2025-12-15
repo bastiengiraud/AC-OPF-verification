@@ -426,7 +426,7 @@ def generate_power_system_data(simulation_parameters, save_csv=True, append_data
 
     n_buses = general_params['n_buses']
     n_gbus = general_params['n_gbus'] # Number of generators
-    n_data_points = 10_000 # data_creation_params['n_data_points']
+    n_data_points = 5_000 # data_creation_params['n_data_points']
     
     # ============= specify pglib-opf case based on n_buses ==================
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
@@ -442,7 +442,7 @@ def generate_power_system_data(simulation_parameters, save_csv=True, append_data
     elif n_buses == 300:
         case_name = 'pglib_opf_case300_ieee.m'
     elif n_buses == 793:
-        case_name = 'pglib_opf_case793_goc.m'
+        case_name = 'pglib_opf_case793_goc_cleaned.m'
     elif n_buses == 1354:
         case_name = 'pglib_opf_case1354_pegase.m'
     elif n_buses == 2869:
@@ -528,6 +528,7 @@ def generate_power_system_data(simulation_parameters, save_csv=True, append_data
         X_loads_pu = X_unscaled_loads_mw / Sbase # 60% - 100% [p.u., p.u.]
         x = X_loads_pu
         X_nn_input = x.T
+        
 
         try:
             current_ppc = copy.deepcopy(base_ppc)
@@ -550,8 +551,8 @@ def generate_power_system_data(simulation_parameters, save_csv=True, append_data
             
             if success:
                 # Store results for this single successful sample
-                pg_tot.append(torch.tensor(results['gen'][:, PG] / 100, dtype=torch.float32).unsqueeze(1))
-                qg_tot.append(torch.tensor(results['gen'][:, QG] / 100, dtype=torch.float32).unsqueeze(1))
+                pg_tot.append(torch.tensor(results['gen'][:, PG] / Sbase, dtype=torch.float32).unsqueeze(1))
+                qg_tot.append(torch.tensor(results['gen'][:, QG] / Sbase, dtype=torch.float32).unsqueeze(1))
                 vm_tot.append(torch.tensor(results['bus'][:, VM], dtype=torch.float32).unsqueeze(1))
                 
                 vm = results['bus'][:, VM]
@@ -649,7 +650,7 @@ def _process_and_save_data(X_loads_all, pg_np, qg_np, vm_np, vr_tot, vi_tot, sim
     elif n_buses == 300:
         case_name = 'pglib_opf_case300_ieee.m'
     elif n_buses == 793:
-        case_name = 'pglib_opf_case793_goc.m'
+        case_name = 'pglib_opf_case793_goc_cleaned.m'
     elif n_buses == 1354:
         case_name = 'pglib_opf_case1354_pegase.m'
     elif n_buses == 2869:
@@ -721,7 +722,7 @@ if __name__ == "__main__":
     
     from data.ac_opf.create_example_parameters import create_example_parameters
 
-    test_n_buses = 793 # Example: for a 6-bus system
+    test_n_buses = 793 
     
     # Check if data_dir for parameters exists before attempting to load
     current_script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

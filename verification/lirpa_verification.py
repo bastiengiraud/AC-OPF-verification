@@ -73,6 +73,10 @@ def create_config(n_buses):
         parameters_dict['hidden_layer_size'] = 75
         parameters_dict['learning_rate'] = 10e-4
         parameters_dict['batch_size'] = 75
+    elif n_buses == 793:
+        parameters_dict['hidden_layer_size'] = 100
+        parameters_dict['learning_rate'] = 20e-4
+        parameters_dict['batch_size'] = 100
     
     
     config = SimpleNamespace(**parameters_dict)
@@ -82,7 +86,7 @@ def create_config(n_buses):
 
 
 # load simulation parameters
-config = create_config(300)
+config = create_config(57)
 simulation_parameters = create_example_parameters(config.test_system)
 n_buses = config.test_system
 n_gens = simulation_parameters['general']['n_gbus']
@@ -96,14 +100,14 @@ n_gens = simulation_parameters['general']['n_gbus']
 sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float() / 100
 sd_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float() / 100
 vmag_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float()
-vmag_min = torch.zeros_like(vmag_max) + 0.94
+vmag_min = torch.tensor(simulation_parameters['true_system']['Volt_min'][0]).float()
 imag_max = torch.tensor(simulation_parameters['true_system']['I_max_pu']).float()
 imag_max_tot = torch.cat((imag_max, imag_max), dim = 0)
 map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32)
 sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32) / 100
 pg_max = (sg_max.T @ map_g)[:, :n_buses]
 qg_max = (sg_max.T @ map_g)[:, n_buses:]
-pg_min = torch.zeros_like(pg_max)
+pg_min = torch.tensor(simulation_parameters['true_system']['pg_min'], dtype=torch.float32) @ map_g[n_gens:, n_buses:] / 100
 qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float32) @ map_g[n_gens:, :n_buses]  / 100
 
 
@@ -147,13 +151,6 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
             f'checkpoint_{n_buses}_15_False_pg_vm_final.pt', 
             f'checkpoint_{n_buses}_15_True_pg_vm_final.pt'
         ]
-    elif n_buses == 118:
-        nn_to_verify = [
-            f'checkpoint_{n_buses}_50_False_vr_vi_final.pt', 
-            f'checkpoint_{n_buses}_50_True_vr_vi_final.pt',
-            f'checkpoint_{n_buses}_50_False_pg_vm_final.pt', 
-            f'checkpoint_{n_buses}_50_True_pg_vm_final.pt'
-        ]
     elif n_buses == 57:
         nn_to_verify = [
             f'checkpoint_{n_buses}_25_False_vr_vi_final.pt', 
@@ -161,12 +158,26 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
             f'checkpoint_{n_buses}_25_False_pg_vm_final.pt', 
             f'checkpoint_{n_buses}_25_True_pg_vm_final.pt'
         ]
+    elif n_buses == 118:
+        nn_to_verify = [
+            f'checkpoint_{n_buses}_50_False_vr_vi_final.pt', 
+            f'checkpoint_{n_buses}_50_True_vr_vi_final.pt',
+            f'checkpoint_{n_buses}_50_False_pg_vm_final.pt', 
+            f'checkpoint_{n_buses}_50_True_pg_vm_final.pt'
+        ]
     elif n_buses == 300:
         nn_to_verify = [
             f'checkpoint_{n_buses}_75_False_vr_vi_final.pt', 
             f'checkpoint_{n_buses}_75_True_vr_vi_final.pt',
             f'checkpoint_{n_buses}_75_False_pg_vm_final.pt', 
             f'checkpoint_{n_buses}_75_True_pg_vm_final.pt'
+        ]
+    elif n_buses == 793:
+        nn_to_verify = [
+            f'checkpoint_{n_buses}_100_False_vr_vi_final.pt', 
+            f'checkpoint_{n_buses}_100_True_vr_vi_final.pt',
+            f'checkpoint_{n_buses}_100_False_pg_vm_final.pt', 
+            f'checkpoint_{n_buses}_100_True_pg_vm_final.pt'
         ]
 
     # Shared verification setup
@@ -455,7 +466,7 @@ def verify_and_save_to_excel(store_excel, n_buses, deltas, sd_min, sd_delta, pg_
                 
                 metrics['Vmg tot Max Violation'] = torch.max(torch.cat([vmag_up_violation, vmag_down_violation])).item()
                 metrics['Vmg tot Avg Violation'] = torch.mean(torch.cat([vmag_up_violation, vmag_down_violation])).item()
-                
+                    
             # Store the raw metrics for the current model in the main results dictionary
             all_raw_results[name][delta] = metrics
 

@@ -24,6 +24,7 @@ import torch
 import pandapower as pp
 import copy
 import time
+import pickle
 
 
 # Define root of the project
@@ -47,8 +48,8 @@ from validation_support import solve_ac_opf_and_collect_data, load_and_prepare_v
 
 def create_config():
     parameters_dict = {
-        'test_system': 118,
-        'hidden_layer_size': 25,
+        'test_system': 793,
+        'hidden_layer_size': 50,
         'n_hidden_layers': 3,
         'epochs': 1000,
         'batch_size': 50,
@@ -117,11 +118,51 @@ def main(only_violations):
     simulation_parameters = create_example_parameters(n_buses)
     net = simulation_parameters['pp_net']
     
-    # solve some AC-OPFs for reference
-    num_solves = 1000
+    # Configuration
+    num_solves = 200
+    seed = 42
+    TARGET_NUM_SAMPLES = 200
+    SOLUTION_DATA_FILE = f"solution_data_1000_samples_{n_buses}_bus.pkl"
+    
+    solution_data_dict = solve_ac_opf_and_collect_data(seed, n_buses, TARGET_NUM_SAMPLES)
 
-    print(f"Starting data generation for case {n_buses} with {num_solves} OPF solves...")
-    solution_data_dict = solve_ac_opf_and_collect_data(n_buses, num_solves)
+    # # --- Load or create solution data dict ---
+    # if os.path.exists(SOLUTION_DATA_FILE):
+    #     # Load existing data
+    #     with open(SOLUTION_DATA_FILE, "rb") as f:
+    #         solution_data_dict = pickle.load(f)
+    #     existing_samples = solution_data_dict['pg_tot'].shape[1]  # Assuming shape [n_gens, n_samples]
+    #     print(f"Loaded solution data with {existing_samples} samples from {SOLUTION_DATA_FILE}.")
+
+    #     # Check if more samples are needed
+    #     if existing_samples < TARGET_NUM_SAMPLES:
+    #         num_additional_samples = TARGET_NUM_SAMPLES - existing_samples
+    #         print(f"Generating {num_additional_samples} additional samples...")
+
+    #         # Generate additional samples (modify your function to accept a start index)
+    #         additional_data = solve_ac_opf_and_collect_data(seed, n_buses, num_additional_samples)
+
+    #         # Merge with existing dict
+    #         for key in solution_data_dict.keys():
+    #             solution_data_dict[key] = np.concatenate(
+    #                 (solution_data_dict[key], additional_data[key]),
+    #                 axis=1  # Concatenate along the sample dimension
+    #             )
+
+    #         # Save updated dict
+    #         with open(SOLUTION_DATA_FILE, "wb") as f:
+    #             pickle.dump(solution_data_dict, f)
+    #         print(f"Updated solution data saved with {TARGET_NUM_SAMPLES} samples.")
+    # else:
+    #     # File does not exist → generate all data
+    #     print(f"Generating full solution data with {TARGET_NUM_SAMPLES} samples...")
+    #     solution_data_dict = solve_ac_opf_and_collect_data(seed, n_buses, TARGET_NUM_SAMPLES)
+
+    #     # Save to file
+    #     with open(SOLUTION_DATA_FILE, "wb") as f:
+    #         pickle.dump(solution_data_dict, f)
+    #     print(f"Solution data saved to {SOLUTION_DATA_FILE}. Exiting.")
+    #     exit()  # Stop script after saving
     
     if n_buses == 14:
         nn_file_name_power_false                = 'checkpoint_14_15_False_pg_vm_final.pt' # 'checkpoint_118_50_False_pg_vm_final.pt'
@@ -143,6 +184,11 @@ def main(only_violations):
         nn_file_name_power_true                 = 'checkpoint_300_75_True_pg_vm_final.pt'
         nn_file_name_volt_false                 = 'checkpoint_300_75_False_vr_vi_final.pt'
         nn_file_name_volt_true                  = 'checkpoint_300_75_True_vr_vi_final.pt'
+    elif n_buses == 793:
+        nn_file_name_power_false                = 'checkpoint_793_100_False_pg_vm_final.pt'
+        nn_file_name_power_true                 = 'checkpoint_793_100_True_pg_vm_final.pt'
+        nn_file_name_volt_false                 = 'checkpoint_793_100_False_vr_vi_final.pt'
+        nn_file_name_volt_true                  = 'checkpoint_793_100_True_vr_vi_final.pt'
         
 
 
@@ -226,7 +272,7 @@ def main(only_violations):
     
         # --------------- do the projections ----------------   
         time_total_false = {}
-        pgvm_projected_results_false               = power_nn_projection(net, num_solves, solution_data_dict, pg_targets_false, vm_targets_false)
+        not_conv_power_proj_false, pgvm_projected_results_false               = power_nn_projection(net, num_solves, solution_data_dict, pg_targets_false, vm_targets_false)
         mse_pgvm_projection_false                  = compare_accuracy_with_mse(solution_data_dict, pgvm_projected_results_false)
 
         # add results to the all_mse_results
@@ -234,7 +280,7 @@ def main(only_violations):
         all_model_names_false                      = ["Pg Vm Projection False"]
         time_total_false['Pg Vm Projection False'] = pgvm_projected_results_false['solve_time']
         
-        vrvi_projected_results_false               = voltage_nn_projection(net, num_solves, solution_data_dict, vr_targets_false, vi_targets_false)
+        not_conv_volt_proj_false, vrvi_projected_results_false               = voltage_nn_projection(net, num_solves, solution_data_dict, vr_targets_false, vi_targets_false)
         mse_vrvi_projection_false                  = compare_accuracy_with_mse(solution_data_dict, vrvi_projected_results_false)
         
         # add results to the all_mse_results
@@ -243,7 +289,7 @@ def main(only_violations):
         time_total_false['Vr Vi Projection False'] = vrvi_projected_results_false['solve_time']
         
         # -------------- do the warm starts ----------------
-        pgvm_ws_results_false                      = power_nn_warm_start(net, num_solves, solution_data_dict, pg_targets_false, vm_targets_false)
+        not_conv_power_ws_false, pgvm_ws_results_false                      = power_nn_warm_start(net, num_solves, solution_data_dict, pg_targets_false, vm_targets_false)
         mse_pgvm_ws_false                          = compare_accuracy_with_mse(solution_data_dict, pgvm_ws_results_false)
         
         # add results to the all_mse_results
@@ -251,7 +297,7 @@ def main(only_violations):
         all_model_names_false.append("Pg Vm Warm Start False")
         time_total_false['Pg Vm Warm Start False'] = pgvm_ws_results_false['solve_time']
         
-        vrvi_ws_results_false                      = voltage_nn_warm_start(net, num_solves, solution_data_dict, vr_targets_false, vi_targets_false)
+        not_conv_volt_proj_false, vrvi_ws_results_false                      = voltage_nn_warm_start(net, num_solves, solution_data_dict, vr_targets_false, vi_targets_false)
         mse_vrvi_ws_false                          = compare_accuracy_with_mse(solution_data_dict, vrvi_ws_results_false)
         
         # add results to the all_mse_results
@@ -266,7 +312,7 @@ def main(only_violations):
     
         # --------------- do the projections ----------------   
         time_total_true = {}
-        pgvm_projected_results_true               = power_nn_projection(net, num_solves, solution_data_dict, pg_targets_true, vm_targets_true)
+        not_conv_power_proj_true, pgvm_projected_results_true               = power_nn_projection(net, num_solves, solution_data_dict, pg_targets_true, vm_targets_true)
         mse_pgvm_projection_true                  = compare_accuracy_with_mse(solution_data_dict, pgvm_projected_results_true)
 
         # add results to the all_mse_results
@@ -274,7 +320,7 @@ def main(only_violations):
         all_model_names_true                      = ["Pg Vm Projection True"]
         time_total_true['Pg Vm Projection True'] = pgvm_projected_results_true['solve_time']
         
-        vrvi_projected_results_true               = voltage_nn_projection(net, num_solves, solution_data_dict, vr_targets_true, vi_targets_true)
+        not_conv_volt_proj_true, vrvi_projected_results_true               = voltage_nn_projection(net, num_solves, solution_data_dict, vr_targets_true, vi_targets_true)
         mse_vrvi_projection_true                  = compare_accuracy_with_mse(solution_data_dict, vrvi_projected_results_true)
         
         # add results to the all_mse_results
@@ -283,7 +329,7 @@ def main(only_violations):
         time_total_true['Vr Vi Projection True'] = vrvi_projected_results_true['solve_time']
         
         # -------------- do the warm starts ----------------
-        pgvm_ws_results_true                      = power_nn_warm_start(net, num_solves, solution_data_dict, pg_targets_true, vm_targets_true)
+        not_conv_power_ws_true, pgvm_ws_results_true                      = power_nn_warm_start(net, num_solves, solution_data_dict, pg_targets_true, vm_targets_true)
         mse_pgvm_ws_true                          = compare_accuracy_with_mse(solution_data_dict, pgvm_ws_results_true)
         
         # add results to the all_mse_results
@@ -291,7 +337,7 @@ def main(only_violations):
         all_model_names_true.append("Pg Vm Warm Start True")
         time_total_true['Pg Vm Warm Start True'] = pgvm_ws_results_true['solve_time']
         
-        vrvi_ws_results_true                      = voltage_nn_warm_start(net, num_solves, solution_data_dict, vr_targets_true, vi_targets_true)
+        not_conv_volt_proj_true, vrvi_ws_results_true                      = voltage_nn_warm_start(net, num_solves, solution_data_dict, vr_targets_true, vi_targets_true)
         mse_vrvi_ws_true                          = compare_accuracy_with_mse(solution_data_dict, vrvi_ws_results_true)
         
         # add results to the all_mse_results
@@ -300,7 +346,22 @@ def main(only_violations):
         time_total_true['Vr Vi Warm Start True'] = vrvi_ws_results_true['solve_time']
         
         # -------------- compare the results ----------------
-        
+        print(
+            f"Number of times the power flow did not converge out of {num_solves} solves:\n"
+            f"Power NN true {num_solves - int((power_nn_results_true['pf_convergence']).sum().item())} out of {num_solves},\n"
+            f"Power NN false {num_solves - int((power_nn_results_false['pf_convergence']).sum().item())} out of {num_solves},\n"
+            f"Number of not converged projections/warm starts for models without w/c penalties:\n"
+            f"Power Projection {not_conv_power_proj_false} out of {num_solves},\n"
+            f"Voltage Projection {not_conv_volt_proj_false} out of {num_solves},\n"
+            f"Power WS {not_conv_power_ws_false} out of {num_solves},\n"
+            f"Voltage WS {not_conv_volt_proj_false} out of {num_solves}.\n"
+            f"Number of not converged projections/warm starts for models with w/c penalties:\n"
+            f"Power Projection {not_conv_power_proj_true} out of {num_solves},\n"
+            f"Voltage Projection {not_conv_volt_proj_true} out of {num_solves},\n"
+            f"Power WS {not_conv_power_ws_true} out of {num_solves},\n"
+            f"Voltage WS {not_conv_volt_proj_true} out of {num_solves}."
+        )
+
         #-------- collect all time results and print csv table --------
         df_false = pd.DataFrame(list(time_total_false.items()), columns=["Key", "Time_False"])
         df_true = pd.DataFrame(list(time_total_true.items()), columns=["Key", "Time_True"])

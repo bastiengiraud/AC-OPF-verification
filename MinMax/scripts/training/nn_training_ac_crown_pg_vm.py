@@ -54,6 +54,8 @@ def train(config):
     Gen_train_typ = torch.ones(Gen_train.shape[0], 1).to(device)
     num_classes = Gen_train.shape[1]
     
+    print("Shape training data: ", Dem_train.shape, Gen_train.shape)
+    
     # generator min max
     pg_max_zero_mask = simulation_parameters['true_system']['Sg_max'][:n_gens] < 1e-9
     gen_mask_to_keep = ~pg_max_zero_mask  # invert mask to keep desired generators
@@ -63,18 +65,23 @@ def train(config):
     # output limits
     map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32, device=Gen_train.device)
     sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=Gen_train.device)
+    
+    
     pg_max = sg_max[:n_gens, :][gen_mask_to_keep.squeeze()] / 100 # (sg_max.T @ map_g)[:, :n_buses]
-    qg_max = (sg_max.T @ map_g)[:, n_buses:]
+    pg_min = torch.tensor(simulation_parameters['true_system']['pg_min'].T,dtype=torch.float32)[:, :][gen_mask_to_keep.squeeze()] / 100
     vmag_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float().to(device)
+    vmag_min = torch.tensor(simulation_parameters['true_system']['Volt_min'][0]).float().to(device)
     
     # voltage min max   
     volt_min = torch.tensor(simulation_parameters['true_system']['Volt_min']).float().to(device).unsqueeze(1)[gen_bus_indices_no_slack]
     volt_max = torch.tensor(simulation_parameters['true_system']['Volt_max']).float().to(device).unsqueeze(1)[gen_bus_indices_no_slack]
     volt_delta = volt_max - volt_min
     
-    output_min = torch.vstack((gen_min, volt_min))
+    output_min = torch.vstack((pg_min, volt_min))
     output_delta = torch.vstack((gen_delta, volt_delta))
     num_gen_nn = len(gen_delta)
+    
+    print(num_classes, len(gen_delta), len(pg_min), len(volt_min), len(volt_delta))
     
     dem_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float().to(device) / 100
     dem_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float().to(device) / 100
@@ -91,7 +98,8 @@ def train(config):
     sd_delta_train_data = (upper_bound_factor - lower_bound_factor) * p_max
     sd_delta_train_data[sd_delta_train_data <= 1e-12] = 1.0
     
-    print(f"This is sd_train max and min: {Dem_train.max()}, {Dem_train.min()}")
+    # print(f"This is sd_train max and min: {Dem_train.max()}, {Dem_train.min()}")
+    print(f"This is sd_train max and min: {sd_delta_train_data.max()}, {sd_min_train_data.min()}") # is
     print(f"This is vrvi_train max and min: {Gen_train.max()}, {Gen_train.min()}")
 
     data_stat = {
@@ -107,6 +115,10 @@ def train(config):
     Dem_test, Gen_test = create_test_data(simulation_parameters=simulation_parameters)
     Dem_test = torch.tensor(Dem_test).float().to(device)
     Gen_test = torch.tensor(Gen_test).float().to(device) 
+    
+    print("shape test data: ", Dem_test.shape, Gen_test.shape)
+    
+    print(f"Training with {Dem_train.shape[0]} samples, validating with {Dem_test.shape[0]} samples")
     
     network_gen = build_network('pg_vm', Dem_train.shape[1], num_classes, config.hidden_layer_size,
                                 config.n_hidden_layers, config.pytorch_init_seed, simulation_parameters)
@@ -212,11 +224,11 @@ def train(config):
             ub_vg = ub[:, num_gen_nn:]
             
             upper_gen_violation = torch.relu(ub_pg - pg_max)
-            lower_gen_violation = torch.relu(-lb_pg)
+            lower_gen_violation = torch.relu(pg_min - lb_pg)
             gen_violation_loss = (torch.mean(upper_gen_violation**2) + torch.mean(lower_gen_violation**2)) 
             
             vmag_up_violation = torch.relu(ub_vg - vmag_max)
-            vmag_down_violation = torch.relu(0.94 - lb_vg)
+            vmag_down_violation = torch.relu(vmag_min - lb_vg)
             vmag_violation = (torch.abs(vmag_up_violation ** 2).mean() + torch.abs(vmag_down_violation ** 2).mean())
             
             if epoch % 20 == 0:

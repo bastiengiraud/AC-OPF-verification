@@ -396,6 +396,10 @@ class QinjMcCormickNN(nn.Module):
 
 
 class Normalise(nn.Module):
+    """
+    Min max normalization to map features to [0, 1].
+    
+    """
     def __init__(self, n_neurons):
         super(Normalise, self).__init__()
         self.register_buffer("minimum", torch.zeros(n_neurons))

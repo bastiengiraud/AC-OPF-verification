@@ -42,7 +42,7 @@ def create_example_parameters(n_buses: int):
     elif n_buses == 300:
         case_name = 'pglib_opf_case300_ieee.m'
     elif n_buses == 793:
-        case_name = 'pglib_opf_case793_goc.m'
+        case_name = 'pglib_opf_case793_goc_cleaned.m'
     elif n_buses == 1354:
         case_name = 'pglib_opf_case1354_pegase.m'
     elif n_buses == 2869:
@@ -321,6 +321,7 @@ def create_example_parameters(n_buses: int):
     true_system_parameters = {'Sg_delta': Sg_delta,
                               'Sg_max': Sg_max,
                               'qg_min': Qg_min,
+                              'pg_min': Pg_min,
                               'Sd_max': Sd_max,
                               'Sd_min': Sd_min, # This refers to nominal P for loads
                               'Sd_delta': Sd_delta, # This refers to nominal P for loads

@@ -33,6 +33,7 @@ def to_np(x):
     return x.detach().numpy()
 
 def train(config):
+    torch.set_default_dtype(torch.float64)
     print("This is config: ", config)
     n_buses = config.test_system
     simulation_parameters = create_example_parameters(n_buses)
@@ -50,22 +51,24 @@ def train(config):
 
     # Training Data
     sd_train, vrvi_train = create_data(simulation_parameters=simulation_parameters)    
-    sd_train = torch.tensor(sd_train).float().to(device)
+    sd_train = torch.tensor(sd_train).double().to(device)
     n_loads = sd_train.shape[1] // 2
-    vrvi_train = torch.tensor(vrvi_train).float().to(device)
+    vrvi_train = torch.tensor(vrvi_train).double().to(device)
     vrvi_train_typ = torch.ones(vrvi_train.shape[0], 1).to(device)
     
-    map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32, device=vrvi_train.device)
-    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=vrvi_train.device) / 100
+    map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float64, device=vrvi_train.device)
+    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float64, device=vrvi_train.device) / 100
     pg_max = (sg_max.T @ map_g)[:, :n_buses]
     qg_max = (sg_max.T @ map_g)[:, n_buses:]
-    qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float32) @ map_g[n_gens:, n_buses:] / 100
+    pg_min = torch.tensor(simulation_parameters['true_system']['pg_min'], dtype=torch.float64) @ map_g[n_gens:, n_buses:] / 100
+    qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float64) @ map_g[n_gens:, n_buses:] / 100
 
     num_classes = vrvi_train.shape[1]
-    sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).float().to(device) / 100
-    sd_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).float().to(device) / 100
-    vmag_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float().to(device)
-    imag_max = torch.tensor(simulation_parameters['true_system']['I_max_pu']).float().to(device)
+    sd_min = torch.tensor(simulation_parameters['true_system']['Sd_min']).double().to(device) / 100
+    sd_delta = torch.tensor(simulation_parameters['true_system']['Sd_delta']).double().to(device) / 100
+    vmag_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).double().to(device)
+    vmag_min = torch.tensor(simulation_parameters['true_system']['Volt_min'][0]).double().to(device)
+    imag_max = torch.tensor(simulation_parameters['true_system']['I_max_pu']).double().to(device)
     imag_max_tot = torch.cat((imag_max, imag_max), dim = 0)
     
     # vrvi_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float().to(device)
@@ -104,7 +107,7 @@ def train(config):
     vrvi_min = torch.cat([vr_min, vi_min], dim=0)
     vrvi_delta = torch.cat([vr_delta, vi_delta], dim=0)
     
-    print(f"This is sd_train max and min: {sd_delta_train_data.max()}, {sd_min_train_data.min()}")
+    print(f"This is sd_train max and min: {sd_delta_train_data.max()}, {sd_min_train_data.min()}") # is
     print(f"This is vrvi_train max and min: {vrvi_train.max()}, {vrvi_train.min()}")
 
     data_stat = {
@@ -120,17 +123,20 @@ def train(config):
     sd_test, vrvi_test = create_test_data(simulation_parameters=simulation_parameters)
     # _, pgvm_test = create_test_data(simulation_parameters=simulation_parameters_gens)
     # pgvm_test = torch.tensor(pgvm_test[:, :num_act_gens]).float().to(device)
-    sd_test = torch.tensor(sd_test).float().to(device)
-    vrvi_test = torch.tensor(vrvi_test).float().to(device)
+    sd_test = torch.tensor(sd_test).double().to(device)
+    vrvi_test = torch.tensor(vrvi_test).double().to(device)
     
     network_gen = build_network('vr_vi', sd_train.shape[1], num_classes, config.hidden_layer_size,
                                 config.n_hidden_layers, config.pytorch_init_seed, simulation_parameters)
     network_gen = normalise_network(network_gen, sd_train, data_stat) 
+    network_gen = network_gen.double()
+    
+    print(f"Training with {sd_train.shape[0]} samples, validating with {sd_test.shape[0]} samples")
 
     
     # multi output network
     lirpa_vr, lirpa_vi, lirpa_ir, lirpa_ii, lirpa_iu, lirpa_vu, lirpa_vl, lirpa_pgu, lirpa_pgl, lirpa_qgu, lirpa_qgl, lirpa_injr, lirpa_inji = \
-    initialize_lirpa_modules(network_gen, torch.empty_like(sd_train).float(), device)
+    initialize_lirpa_modules(network_gen, torch.empty_like(sd_train).double(), device)
     
     print('Running on', device)
 
@@ -139,8 +145,8 @@ def train(config):
     x_max = upper_bound_factor * p_max
         
     # Reshape and convert to float tensors for CROWN
-    x_min = x_min.reshape(1, -1).clone().detach().float()
-    x_max = x_max.reshape(1, -1).clone().detach().float()
+    x_min = x_min.reshape(1, -1).clone().detach().double()
+    x_max = x_max.reshape(1, -1).clone().detach().double()
     
     if torch.any(x_max < x_min):
         # Handle the error or log a warning
@@ -238,9 +244,37 @@ def train(config):
             _, ub_vu = lirpa_vu.compute_bounds(x=(image,), method=config.abc_method)
             lb_vl, _ = lirpa_vl.compute_bounds(x=(image,), method=config.abc_method)
             
+            # check if the bounds are not NaN or Inf
+            def sanitize_bounds(tensor, name):
+                """ 
+                This breaks the computational graph, but at least flags the problem.
+                
+                """
+                nan_mask = torch.isnan(tensor)
+                posinf_mask = tensor == float('inf')
+                neginf_mask = tensor == float('-inf')
+
+                nan_count = nan_mask.sum().item()
+                posinf_count = posinf_mask.sum().item()
+                neginf_count = neginf_mask.sum().item()
+
+                if nan_count > 0 or posinf_count > 0 or neginf_count > 0:
+                    print(
+                        f"Issues in {name}: "
+                        f"{nan_count} NaNs, {posinf_count} +Infs, {neginf_count} -Infs. "
+                        "Replacing with finite values."
+                    )
+                    tensor = torch.nan_to_num(tensor, nan=0.0, posinf=1e6, neginf=-1e6)
+
+                return tensor
+
+            ub_iu = sanitize_bounds(ub_iu, "ub_iu")
+            ub_vu = sanitize_bounds(ub_vu, "ub_vu")
+            lb_vl = sanitize_bounds(lb_vl, "lb_vl")
+            
             vmag_up_violation = torch.relu(ub_vu - vmag_max)
-            vmag_down_violation = torch.relu(0.94 - lb_vl)
-            vmag_violation = (torch.abs(vmag_up_violation ** 2).mean() + torch.abs(vmag_down_violation ** 2).mean())
+            vmag_down_violation = torch.relu(vmag_min - lb_vl)
+            vmag_violation = (torch.clamp(vmag_up_violation, max=1e3).square().mean() + torch.clamp(vmag_down_violation, max=1e3).square().mean())
             
             imag_up_violation = torch.relu(ub_iu - imag_max_tot) # get actual current ratings
             imag_violation = (torch.abs(imag_up_violation ** 2).mean())
@@ -270,17 +304,18 @@ def train(config):
                 lb_qg, _ = lirpa_qgl.compute_bounds(x=(image,), method=config.abc_method)
                 
                 upper_gen_violation = torch.relu(torch.stack([ub_pg - pg_max, ub_qg - qg_max], dim=0))
-                lower_gen_violation = torch.relu(torch.stack([-lb_pg, qg_min - lb_qg], dim=0))
+                lower_gen_violation = torch.relu(torch.stack([pg_min - lb_pg, qg_min - lb_qg], dim=0))
                 gen_violation_loss = (torch.mean(upper_gen_violation) + torch.mean(lower_gen_violation)) 
                 
                 # crown bounds on KCL current injections
                 lb_injr, ub_injr = lirpa_injr.compute_bounds(x=(image,), method=config.abc_method)
                 lb_inji, ub_inji = lirpa_inji.compute_bounds(x=(image,), method=config.abc_method)
                 
-                worst_case_inj_real = torch.max(lb_injr**2, ub_injr**2)
-                worst_case_inj_imag = torch.max(lb_inji**2, ub_inji**2)
+                worst_case_inj_real = torch.max(lb_injr.square(), ub_injr.square())
+                worst_case_inj_imag = torch.max(lb_inji.square(), ub_inji.square())
 
-                inj_violation = torch.mean(torch.sqrt(worst_case_inj_real + worst_case_inj_imag)) # sum of squares
+                with torch.autograd.set_detect_anomaly(True):
+                    inj_violation = torch.mean(torch.sqrt(torch.clamp(worst_case_inj_real + worst_case_inj_imag, min=1e-9)))  # sum of squares
                 
                 if epoch % 20 == 0:
                     print(f"Average worst-case violation generator up: {upper_gen_violation.mean():.4f}")
@@ -356,7 +391,7 @@ def train(config):
                     )
             
                     lirpa_vr, lirpa_vi, lirpa_ir, lirpa_ii, lirpa_iu, lirpa_vu, lirpa_vl, lirpa_pgu, lirpa_pgl, lirpa_qgu, lirpa_qgl, lirpa_injr, lirpa_inji = \
-                        initialize_lirpa_modules(network_gen, torch.empty_like(sd_train).float(), device)
+                        initialize_lirpa_modules(network_gen, torch.empty_like(sd_train).double(), device)
             
         # After some epoch, prune 50% neurons once
         if epoch == 500:
@@ -388,19 +423,19 @@ def train(config):
     
   
 def initialize_lirpa_modules(model, dummy_input, device):
-    lirpa_vr    = BoundedModule(OutputWrapper(model, 0), dummy_input, device=device)
-    lirpa_vi    = BoundedModule(OutputWrapper(model, 1), dummy_input, device=device)
-    lirpa_ir    = BoundedModule(OutputWrapper(model, 2), dummy_input, device=device)
-    lirpa_ii    = BoundedModule(OutputWrapper(model, 3), dummy_input, device=device)
-    lirpa_iu    = BoundedModule(OutputWrapper(model, 4), dummy_input, device=device)
-    lirpa_vu    = BoundedModule(OutputWrapper(model, 5), dummy_input, device=device)
-    lirpa_vl    = BoundedModule(OutputWrapper(model, 6), dummy_input, device=device)
-    lirpa_pgu   = BoundedModule(OutputWrapper(model, 7), dummy_input, device=device)
-    lirpa_pgl   = BoundedModule(OutputWrapper(model, 8), dummy_input, device=device)
-    lirpa_qgu   = BoundedModule(OutputWrapper(model, 9), dummy_input, device=device)
-    lirpa_qgl   = BoundedModule(OutputWrapper(model, 10), dummy_input, device=device)
-    lirpa_injr   = BoundedModule(OutputWrapper(model, 11), dummy_input, device=device)
-    lirpa_inji   = BoundedModule(OutputWrapper(model, 12), dummy_input, device=device)
+    lirpa_vr    = BoundedModule(OutputWrapper(model, 0), dummy_input, device=device).double()
+    lirpa_vi    = BoundedModule(OutputWrapper(model, 1), dummy_input, device=device).double()
+    lirpa_ir    = BoundedModule(OutputWrapper(model, 2), dummy_input, device=device).double()
+    lirpa_ii    = BoundedModule(OutputWrapper(model, 3), dummy_input, device=device).double()
+    lirpa_iu    = BoundedModule(OutputWrapper(model, 4), dummy_input, device=device).double()
+    lirpa_vu    = BoundedModule(OutputWrapper(model, 5), dummy_input, device=device).double()
+    lirpa_vl    = BoundedModule(OutputWrapper(model, 6), dummy_input, device=device).double()
+    lirpa_pgu   = BoundedModule(OutputWrapper(model, 7), dummy_input, device=device).double()
+    lirpa_pgl   = BoundedModule(OutputWrapper(model, 8), dummy_input, device=device).double()
+    lirpa_qgu   = BoundedModule(OutputWrapper(model, 9), dummy_input, device=device).double()
+    lirpa_qgl   = BoundedModule(OutputWrapper(model, 10), dummy_input, device=device).double()
+    lirpa_injr   = BoundedModule(OutputWrapper(model, 11), dummy_input, device=device).double()
+    lirpa_inji   = BoundedModule(OutputWrapper(model, 12), dummy_input, device=device).double()
     return lirpa_vr, lirpa_vi, lirpa_ir, lirpa_ii, lirpa_iu, lirpa_vu, lirpa_vl, lirpa_pgu, lirpa_pgl, lirpa_qgu, lirpa_qgl, lirpa_injr, lirpa_inji
 
     
@@ -426,8 +461,8 @@ def normalise_network(model, sd_train, data_stat):
     
     # print(sd_min.dtype, sd_delta.dtype, vrvi_min.dtype, vrvi_delta.dtype)
 
-    input_stats = (sd_min.reshape(-1).float(), sd_delta.reshape(-1).float())
-    output_stats = (vrvi_min.reshape(-1).float(), vrvi_delta.reshape(-1).float())
+    input_stats = (sd_min.reshape(-1).double(), sd_delta.reshape(-1).double())
+    output_stats = (vrvi_min.reshape(-1).double(), vrvi_delta.reshape(-1).double())
 
 
     model.normalise_input(input_stats)
@@ -551,8 +586,8 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, optimizer, config, simul
     n_bus = simulation_parameters['general']['n_buses']
     n_lines = simulation_parameters['true_system']['n_line']
     n_gens = simulation_parameters['general']['n_gbus']
-    f_bus = torch.tensor(simulation_parameters['true_system']['fbus'], dtype=torch.float32, device=vrvi_train.device)
-    t_bus = torch.tensor(simulation_parameters['true_system']['tbus'], dtype=torch.float32, device=vrvi_train.device)
+    f_bus = torch.tensor(simulation_parameters['true_system']['fbus'], dtype=torch.float64, device=vrvi_train.device)
+    t_bus = torch.tensor(simulation_parameters['true_system']['tbus'], dtype=torch.float64, device=vrvi_train.device)
     # act_gen_indices = simulation_parameters['true_system']['pg_active']
     pv_buses_nz = simulation_parameters['true_system']['pv_buses_nz']
     pv_buses = simulation_parameters['true_system']['pv_buses']
@@ -565,28 +600,28 @@ def train_epoch(network_gen, sd_train, vrvi_train, typ, optimizer, config, simul
     volt_max = simulation_parameters['true_system']['Volt_max'][0]
     volt_min = simulation_parameters['true_system']['Volt_min'][0]
     
-    vr_vi_min = torch.full((config.batch_size, n_bus), volt_min, dtype=torch.float32, device=vrvi_train.device)
-    vr_vi_max = torch.full((config.batch_size, n_bus), volt_max, dtype=torch.float32, device=vrvi_train.device)
-    s_max = torch.tensor(simulation_parameters['true_system']['L_limit'], dtype=torch.float32, device=vrvi_train.device) / 100
+    vr_vi_min = torch.full((config.batch_size, n_bus), volt_min, dtype=torch.float64, device=vrvi_train.device)
+    vr_vi_max = torch.full((config.batch_size, n_bus), volt_max, dtype=torch.float64, device=vrvi_train.device)
+    s_max = torch.tensor(simulation_parameters['true_system']['L_limit'], dtype=torch.float64, device=vrvi_train.device) / 100
     
     # Y bus
-    Ybr_rect = torch.tensor(simulation_parameters['true_system']['Ybr_rect'], dtype=torch.float32, device=vrvi_train.device)
+    Ybr_rect = torch.tensor(simulation_parameters['true_system']['Ybr_rect'], dtype=torch.float64, device=vrvi_train.device)
     Ybus = torch.tensor(simulation_parameters['true_system']['Ybus'], dtype=torch.complex128, device=vrvi_train.device)
-    Ybus_real = Ybus.real.float()
-    Ybus_imag = Ybus.imag.float()
+    Ybus_real = Ybus.real.double()
+    Ybus_imag = Ybus.imag.double()
 
-    map_l = torch.tensor(simulation_parameters['true_system']['Map_L'], dtype=torch.float32, device=vrvi_train.device)
-    map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float32, device=vrvi_train.device)
-    kcl_im = torch.tensor(simulation_parameters['true_system']['kcl_im'], dtype=torch.float32, device=vrvi_train.device)
-    bs_values = torch.tensor(simulation_parameters['true_system']['bus_bs'], dtype=torch.float32, device=vrvi_train.device).unsqueeze(1)
+    map_l = torch.tensor(simulation_parameters['true_system']['Map_L'], dtype=torch.float64, device=vrvi_train.device)
+    map_g = torch.tensor(simulation_parameters['true_system']['Map_g'], dtype=torch.float64, device=vrvi_train.device)
+    kcl_im = torch.tensor(simulation_parameters['true_system']['kcl_im'], dtype=torch.float64, device=vrvi_train.device)
+    bs_values = torch.tensor(simulation_parameters['true_system']['bus_bs'], dtype=torch.float64, device=vrvi_train.device).unsqueeze(1)
     kcl_from_im = torch.relu(kcl_im) # +1 at from-bus, 0 elsewhere
     kcl_to_im = -torch.relu(-kcl_im) # +1 at to-bus, 0 elsewhere
     
     # generator capacity
-    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32, device=vrvi_train.device) / 100
+    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float64, device=vrvi_train.device) / 100
     pg_max = (sg_max.T @ map_g)[:, :n_bus]
     qg_max = (sg_max.T @ map_g)[:, n_bus:]
-    qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float32) @ map_g[n_gens:, n_bus:] / 100
+    qg_min = torch.tensor(simulation_parameters['true_system']['qg_min'], dtype=torch.float64) @ map_g[n_gens:, n_bus:] / 100
 
     # Initialize lists to accumulate current magnitudes for epoch-level metrics
     epoch_I_mag_surrogate = []

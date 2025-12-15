@@ -78,6 +78,7 @@ def _initialize_result_tensors(n_bus: int, n_gens: int, n_branches: int, n_data_
         'Ibr_to_i_tot': torch.zeros(n_branches, n_data_points, dtype=torch.float32),
         'cost_tot': torch.zeros(1, n_data_points, dtype=torch.float32),  
         'slack_tot': torch.zeros(1, n_data_points, dtype=torch.float32),  
+        'sample_num': torch.zeros(1, n_data_points, dtype=torch.int32),  # To track sample indices
     }
     
 def _limit_tensor(simulation_parameters):
@@ -102,141 +103,243 @@ def _limit_tensor(simulation_parameters):
         'I_max': torch.tensor(I_max, dtype=torch.float32),
     }
     
+# def calculate_violations(solution_data, simulation_parameters):
+#     """
+#     Calculates the average and max violation for various quantities, including
+#     nodal current balance. Converts any numpy.ndarray inputs to torch.Tensor internally.
+
+#     Args:
+#         solution_data (dict): Dictionary containing simulation results. Can have
+#                               values as either numpy.ndarray or torch.Tensor.
+#         simulation_parameters (dict): Dictionary containing system parameters.
+#                                       Assumes 'Ybus_r' and 'Ybus_i' are present.
+
+#     Returns:
+#         dict: A dictionary with both average and maximum violations for 'pg', 'qg',
+#               'vm', 'Ibr', and the new 'Ibal' (current balance).
+#     """
+#     # --- INTERNAL MODIFICATION: Convert all numpy arrays to tensors ---
+#     for key, value in solution_data.items():
+#         if isinstance(value, np.ndarray):
+#             solution_data[key] = torch.from_numpy(value).float()
+            
+#     limits = _limit_tensor(simulation_parameters)
+    
+#     # Initialize the results dictionary
+#     violations = {
+#         'pg_up_avg_violation': torch.tensor(0.0),
+#         'pg_up_max_violation': torch.tensor(0.0),
+#         'pg_down_avg_violation': torch.tensor(0.0),
+#         'pg_down_max_violation': torch.tensor(0.0),
+#         'qg_up_avg_violation': torch.tensor(0.0),
+#         'qg_up_max_violation': torch.tensor(0.0),
+#         'qg_down_avg_violation': torch.tensor(0.0),
+#         'qg_down_max_violation': torch.tensor(0.0),
+#         'vm_up_avg_violation': torch.tensor(0.0),
+#         'vm_up_max_violation': torch.tensor(0.0),
+#         'vm_down_avg_violation': torch.tensor(0.0),
+#         'vm_down_max_violation': torch.tensor(0.0),
+#         'Ibr_avg_violation': torch.tensor(0.0),
+#         'Ibr_max_violation': torch.tensor(0.0),
+#         'Ibal_avg_violation': torch.tensor(0.0), # New key for current balance
+#         'Ibal_max_violation': torch.tensor(0.0), # New key for current balance
+#     }
+    
+#     # --- 1. Generator Active Power (Pg) Violation ---
+#     pg_actual = solution_data['pg_tot']
+#     pg_max_expanded = limits['pg_max']
+#     pg_upper_violation = torch.relu(pg_actual - pg_max_expanded)
+#     pg_lower_violation = torch.relu(-pg_actual)
+    
+#     violations['pg_up_avg_violation'] = torch.mean(pg_upper_violation)
+#     violations['pg_up_max_violation'] = torch.max(pg_upper_violation)
+    
+#     violations['pg_down_avg_violation'] = torch.mean(pg_lower_violation)
+#     violations['pg_down_max_violation'] = torch.max(pg_lower_violation)
+    
+#     # --- 2. Generator Reactive Power (Qg) Violation ---
+#     qg_actual = solution_data['qg_tot']
+#     qg_max_expanded = limits['qg_max']
+#     qg_min_expanded = limits['qg_min']
+#     qg_upper_violation = torch.relu(qg_actual - qg_max_expanded)
+#     qg_lower_violation = torch.relu(qg_min_expanded - qg_actual)
+    
+#     violations['qg_up_avg_violation'] = torch.mean(qg_upper_violation)
+#     violations['qg_up_max_violation'] = torch.max(qg_upper_violation)
+    
+#     violations['qg_down_avg_violation'] = torch.mean(qg_lower_violation)
+#     violations['qg_down_max_violation'] = torch.max(qg_lower_violation)
+    
+#     # --- 3. Voltage Magnitude (Vm) Violation ---
+#     vm_actual = solution_data['vm_tot']
+#     vm_max_expanded = limits['vm_max'].unsqueeze(1)
+#     vm_min_expanded = limits['vm_min'].unsqueeze(1)
+    
+#     vm_upper_violation = torch.relu(vm_actual - vm_max_expanded)
+#     vm_lower_violation = torch.relu(vm_min_expanded - vm_actual)
+    
+#     vm_up_violation = vm_upper_violation 
+#     vm_down_violation = vm_lower_violation
+    
+#     violations['vm_up_avg_violation'] = torch.mean(vm_up_violation)
+#     violations['vm_up_max_violation'] = torch.max(vm_up_violation)
+    
+#     violations['vm_down_avg_violation'] = torch.mean(vm_down_violation)
+#     violations['vm_down_max_violation'] = torch.max(vm_down_violation)
+    
+#     # --- 4. Branch Current Magnitude (Ibr) Violation ---
+#     I_from_r = solution_data['Ibr_from_r_tot']
+#     I_from_i = solution_data['Ibr_from_i_tot']
+#     I_to_r = solution_data['Ibr_to_r_tot']
+#     I_to_i = solution_data['Ibr_to_i_tot']
+    
+#     I_from_mag = torch.sqrt(I_from_r**2 + I_from_i**2)
+#     I_to_mag = torch.sqrt(I_to_r**2 + I_to_i**2)
+    
+#     I_max_expanded = limits['I_max'].unsqueeze(1)
+    
+#     I_from_violation = torch.relu(I_from_mag - I_max_expanded)
+#     I_to_violation = torch.relu(I_to_mag - I_max_expanded)
+    
+#     all_Ibr_violations = torch.cat((I_from_violation, I_to_violation), dim=0)
+    
+#     violations['Ibr_avg_violation'] = torch.mean(all_Ibr_violations)
+#     violations['Ibr_max_violation'] = torch.max(all_Ibr_violations)
+
+#     # --- 5. Nodal Current Balance (Ibal) Violation ---
+#     # Retrieve Ybus from simulation parameters and convert to tensor
+#     kcl_im = torch.tensor(simulation_parameters['true_system']['kcl_im'], dtype=torch.float32)
+#     bs_values = torch.tensor(simulation_parameters['true_system']['bus_bs'], dtype=torch.float64).unsqueeze(1)
+#     kcl_from_im = torch.relu(kcl_im) # +1 at from-bus, 0 elsewhere
+#     kcl_to_im = -torch.relu(-kcl_im) # +1 at to-bus, 0 elsewhere
+
+#     # branch_injections_r = torch.matmul(kcl_im, Ibr_from_r_tot[:, i]) #+ torch.matmul(kcl_im, Ibr_to_r_tot[:, i])
+#     # branch_injections_i = torch.matmul(kcl_im, Ibr_from_i_tot[:, i]) #+ torch.matmul(kcl_im, Ibr_to_i_tot[:, i])
+
+#     branch_injections_r = torch.matmul(kcl_from_im, I_from_r) - torch.matmul(kcl_to_im, I_to_r) 
+#     branch_injections_i = torch.matmul(kcl_from_im, I_from_i) - torch.matmul(kcl_to_im, I_to_i)
+
+#     # Get bus voltages and injected currents
+#     vr_tot = solution_data['vr_tot']
+#     vi_tot = solution_data['vi_tot']
+#     Iinj_r_tot = solution_data['Iinj_r_tot']
+#     Iinj_i_tot = solution_data['Iinj_i_tot']
+    
+#     I_shunt_r = -bs_values * vi_tot 
+#     I_shunt_i = bs_values * vr_tot 
+    
+#     # Calculate the current imbalance (I_injected - Ybus * V)
+#     delta_I_r = Iinj_r_tot - branch_injections_r - I_shunt_r
+#     delta_I_i = Iinj_i_tot - branch_injections_i - I_shunt_i
+    
+#     # The violation is the magnitude of the imbalance
+#     Ibal_violation = torch.sqrt(delta_I_r**2 + delta_I_i**2)
+
+#     violations['Ibal_avg_violation'] = torch.mean(Ibal_violation)
+#     violations['Ibal_max_violation'] = torch.max(Ibal_violation)
+    
+#     return violations
+
+
 def calculate_violations(solution_data, simulation_parameters):
     """
     Calculates the average and max violation for various quantities, including
-    nodal current balance. Converts any numpy.ndarray inputs to torch.Tensor internally.
-
-    Args:
-        solution_data (dict): Dictionary containing simulation results. Can have
-                              values as either numpy.ndarray or torch.Tensor.
-        simulation_parameters (dict): Dictionary containing system parameters.
-                                      Assumes 'Ybus_r' and 'Ybus_i' are present.
-
-    Returns:
-        dict: A dictionary with both average and maximum violations for 'pg', 'qg',
-              'vm', 'Ibr', and the new 'Ibal' (current balance).
+    nodal current balance. Only considers samples where pf_convergence == 1.
     """
-    # --- INTERNAL MODIFICATION: Convert all numpy arrays to tensors ---
+    # Convert numpy arrays to tensors if needed
     for key, value in solution_data.items():
         if isinstance(value, np.ndarray):
             solution_data[key] = torch.from_numpy(value).float()
-            
+
     limits = _limit_tensor(simulation_parameters)
-    
-    # Initialize the results dictionary
-    violations = {
-        'pg_up_avg_violation': torch.tensor(0.0),
-        'pg_up_max_violation': torch.tensor(0.0),
-        'pg_down_avg_violation': torch.tensor(0.0),
-        'pg_down_max_violation': torch.tensor(0.0),
-        'qg_up_avg_violation': torch.tensor(0.0),
-        'qg_up_max_violation': torch.tensor(0.0),
-        'qg_down_avg_violation': torch.tensor(0.0),
-        'qg_down_max_violation': torch.tensor(0.0),
-        'vm_up_avg_violation': torch.tensor(0.0),
-        'vm_up_max_violation': torch.tensor(0.0),
-        'vm_down_avg_violation': torch.tensor(0.0),
-        'vm_down_max_violation': torch.tensor(0.0),
-        'Ibr_avg_violation': torch.tensor(0.0),
-        'Ibr_max_violation': torch.tensor(0.0),
-        'Ibal_avg_violation': torch.tensor(0.0), # New key for current balance
-        'Ibal_max_violation': torch.tensor(0.0), # New key for current balance
-    }
-    
+
+    # Create a mask for only converged samples
+    pf_conv_mask = solution_data['pf_convergence'].flatten() == 1  # boolean tensor
+
+    # If no sample converged, return zeros
+    # if pf_conv_mask.sum() == 0:
+    #     return {key: torch.tensor(1000.0) for key in [
+    #         'pg_up_avg_violation', 'pg_up_max_violation',
+    #         'pg_down_avg_violation', 'pg_down_max_violation',
+    #         'qg_up_avg_violation', 'qg_up_max_violation',
+    #         'qg_down_avg_violation', 'qg_down_max_violation',
+    #         'vm_up_avg_violation', 'vm_up_max_violation',
+    #         'vm_down_avg_violation', 'vm_down_max_violation',
+    #         'Ibr_avg_violation', 'Ibr_max_violation',
+    #         'Ibal_avg_violation', 'Ibal_max_violation'
+    #     ]}
+
     # --- 1. Generator Active Power (Pg) Violation ---
-    pg_actual = solution_data['pg_tot']
+    pg_actual = solution_data['pg_tot']#[:, pf_conv_mask]
     pg_max_expanded = limits['pg_max']
     pg_upper_violation = torch.relu(pg_actual - pg_max_expanded)
     pg_lower_violation = torch.relu(-pg_actual)
-    
-    violations['pg_up_avg_violation'] = torch.mean(pg_upper_violation)
-    violations['pg_up_max_violation'] = torch.max(pg_upper_violation)
-    
-    violations['pg_down_avg_violation'] = torch.mean(pg_lower_violation)
-    violations['pg_down_max_violation'] = torch.max(pg_lower_violation)
-    
+
     # --- 2. Generator Reactive Power (Qg) Violation ---
-    qg_actual = solution_data['qg_tot']
+    qg_actual = solution_data['qg_tot']#[:, pf_conv_mask]
     qg_max_expanded = limits['qg_max']
     qg_min_expanded = limits['qg_min']
     qg_upper_violation = torch.relu(qg_actual - qg_max_expanded)
     qg_lower_violation = torch.relu(qg_min_expanded - qg_actual)
-    
-    violations['qg_up_avg_violation'] = torch.mean(qg_upper_violation)
-    violations['qg_up_max_violation'] = torch.max(qg_upper_violation)
-    
-    violations['qg_down_avg_violation'] = torch.mean(qg_lower_violation)
-    violations['qg_down_max_violation'] = torch.max(qg_lower_violation)
-    
+
     # --- 3. Voltage Magnitude (Vm) Violation ---
-    vm_actual = solution_data['vm_tot']
+    vm_actual = solution_data['vm_tot']#[:, pf_conv_mask]
     vm_max_expanded = limits['vm_max'].unsqueeze(1)
     vm_min_expanded = limits['vm_min'].unsqueeze(1)
-    
     vm_upper_violation = torch.relu(vm_actual - vm_max_expanded)
     vm_lower_violation = torch.relu(vm_min_expanded - vm_actual)
-    
-    vm_up_violation = vm_upper_violation 
-    vm_down_violation = vm_lower_violation
-    
-    violations['vm_up_avg_violation'] = torch.mean(vm_up_violation)
-    violations['vm_up_max_violation'] = torch.max(vm_up_violation)
-    
-    violations['vm_down_avg_violation'] = torch.mean(vm_down_violation)
-    violations['vm_down_max_violation'] = torch.max(vm_down_violation)
-    
+
     # --- 4. Branch Current Magnitude (Ibr) Violation ---
-    I_from_r = solution_data['Ibr_from_r_tot']
-    I_from_i = solution_data['Ibr_from_i_tot']
-    I_to_r = solution_data['Ibr_to_r_tot']
-    I_to_i = solution_data['Ibr_to_i_tot']
-    
+    I_from_r = solution_data['Ibr_from_r_tot']#[:, pf_conv_mask]
+    I_from_i = solution_data['Ibr_from_i_tot']#[:, pf_conv_mask]
+    I_to_r = solution_data['Ibr_to_r_tot']#[:, pf_conv_mask]
+    I_to_i = solution_data['Ibr_to_i_tot']#[:, pf_conv_mask]
     I_from_mag = torch.sqrt(I_from_r**2 + I_from_i**2)
     I_to_mag = torch.sqrt(I_to_r**2 + I_to_i**2)
-    
     I_max_expanded = limits['I_max'].unsqueeze(1)
-    
     I_from_violation = torch.relu(I_from_mag - I_max_expanded)
     I_to_violation = torch.relu(I_to_mag - I_max_expanded)
-    
     all_Ibr_violations = torch.cat((I_from_violation, I_to_violation), dim=0)
-    
-    violations['Ibr_avg_violation'] = torch.mean(all_Ibr_violations)
-    violations['Ibr_max_violation'] = torch.max(all_Ibr_violations)
 
     # --- 5. Nodal Current Balance (Ibal) Violation ---
-    # Retrieve Ybus from simulation parameters and convert to tensor
     kcl_im = torch.tensor(simulation_parameters['true_system']['kcl_im'], dtype=torch.float32)
-    bs_values = torch.tensor(simulation_parameters['true_system']['bus_bs'], dtype=torch.float64).unsqueeze(1)
-    kcl_from_im = torch.relu(kcl_im) # +1 at from-bus, 0 elsewhere
-    kcl_to_im = -torch.relu(-kcl_im) # +1 at to-bus, 0 elsewhere
+    bs_values = torch.tensor(simulation_parameters['true_system']['bus_bs'], dtype=torch.float32).unsqueeze(1)
+    kcl_from_im = torch.relu(kcl_im)
+    kcl_to_im = -torch.relu(-kcl_im)
 
-    # branch_injections_r = torch.matmul(kcl_im, Ibr_from_r_tot[:, i]) #+ torch.matmul(kcl_im, Ibr_to_r_tot[:, i])
-    # branch_injections_i = torch.matmul(kcl_im, Ibr_from_i_tot[:, i]) #+ torch.matmul(kcl_im, Ibr_to_i_tot[:, i])
+    vr_tot = solution_data['vr_tot']#[:, pf_conv_mask]
+    vi_tot = solution_data['vi_tot']#[:, pf_conv_mask]
+    Iinj_r_tot = solution_data['Iinj_r_tot']#[:, pf_conv_mask]
+    Iinj_i_tot = solution_data['Iinj_i_tot']#[:, pf_conv_mask]
 
-    branch_injections_r = torch.matmul(kcl_from_im, I_from_r) - torch.matmul(kcl_to_im, I_to_r) 
+    I_shunt_r = -bs_values * vi_tot
+    I_shunt_i = bs_values * vr_tot
+    branch_injections_r = torch.matmul(kcl_from_im, I_from_r) - torch.matmul(kcl_to_im, I_to_r)
     branch_injections_i = torch.matmul(kcl_from_im, I_from_i) - torch.matmul(kcl_to_im, I_to_i)
-
-    # Get bus voltages and injected currents
-    vr_tot = solution_data['vr_tot']
-    vi_tot = solution_data['vi_tot']
-    Iinj_r_tot = solution_data['Iinj_r_tot']
-    Iinj_i_tot = solution_data['Iinj_i_tot']
-    
-    I_shunt_r = -bs_values * vi_tot 
-    I_shunt_i = bs_values * vr_tot 
-    
-    # Calculate the current imbalance (I_injected - Ybus * V)
     delta_I_r = Iinj_r_tot - branch_injections_r - I_shunt_r
     delta_I_i = Iinj_i_tot - branch_injections_i - I_shunt_i
-    
-    # The violation is the magnitude of the imbalance
     Ibal_violation = torch.sqrt(delta_I_r**2 + delta_I_i**2)
 
-    violations['Ibal_avg_violation'] = torch.mean(Ibal_violation)
-    violations['Ibal_max_violation'] = torch.max(Ibal_violation)
-    
+    # --- Aggregate results ---
+    violations = {
+        'pg_up_avg_violation': torch.mean(pg_upper_violation),
+        'pg_up_max_violation': torch.max(pg_upper_violation),
+        'pg_down_avg_violation': torch.mean(pg_lower_violation),
+        'pg_down_max_violation': torch.max(pg_lower_violation),
+        'qg_up_avg_violation': torch.mean(qg_upper_violation),
+        'qg_up_max_violation': torch.max(qg_upper_violation),
+        'qg_down_avg_violation': torch.mean(qg_lower_violation),
+        'qg_down_max_violation': torch.max(qg_lower_violation),
+        'vm_up_avg_violation': torch.mean(vm_upper_violation),
+        'vm_up_max_violation': torch.max(vm_upper_violation),
+        'vm_down_avg_violation': torch.mean(vm_lower_violation),
+        'vm_down_max_violation': torch.max(vm_lower_violation),
+        'Ibr_avg_violation': torch.mean(all_Ibr_violations),
+        'Ibr_max_violation': torch.max(all_Ibr_violations),
+        'Ibal_avg_violation': torch.mean(Ibal_violation),
+        'Ibal_max_violation': torch.max(Ibal_violation),
+    }
+
     return violations
     
     
@@ -248,7 +351,7 @@ def _process_and_store_opf_results(results: dict, Sbase: float, Ybus_dense: np.n
     """
     # Unpack for direct assignment within this helper
     pg_tot, qg_tot, vm_tot, pinj_tot, qinj_tot, vr_tot, vi_tot, \
-    Iinj_r_tot, Iinj_i_tot, Ibr_from_r_tot, Ibr_from_i_tot, Ibr_to_r_tot, Ibr_to_i_tot, cost_tot, slack_tot = \
+    Iinj_r_tot, Iinj_i_tot, Ibr_from_r_tot, Ibr_from_i_tot, Ibr_to_r_tot, Ibr_to_i_tot, cost_tot, slack_tot, sample_num = \
         (result_tensors[key] for key in result_tensors.keys()) # Dynamically unpack
         
     cost_tot[:, entry_idx] = results['f']  # Store the cost for this entry
@@ -281,6 +384,7 @@ def _process_and_store_opf_results(results: dict, Sbase: float, Ybus_dense: np.n
     
     # Branch current calculations
     branch_data = results['branch'] # Assuming results['branch'] is a numpy array similar to ppc['branch']
+    branch_data = np.real_if_close(branch_data)
     fbus_external = branch_data[:, F_BUS]
     tbus_external = branch_data[:, T_BUS]
 
@@ -323,7 +427,13 @@ def _process_and_store_opf_results(results: dict, Sbase: float, Ybus_dense: np.n
 
     # Get the active power output (PG) for that generator ---
     slack_pg = gen_data[gen_on_slack_idx, PG]
-    slack_tot[:, entry_idx] = slack_pg / Sbase   
+    slack_tot[:, entry_idx] = slack_pg #/ Sbase  
+    
+    # sample number
+    sample_num[:, entry_idx] = entry_idx
+    
+    
+    
     
     
 def _filter_generator_data(gen_data_tensor: torch.Tensor, ppc_bus_data: np.ndarray, base_ppc) -> torch.Tensor:
@@ -339,8 +449,199 @@ def _filter_generator_data(gen_data_tensor: torch.Tensor, ppc_bus_data: np.ndarr
     return gen_data_tensor[gen_mask_to_keep, :]
 
 
+import re
+import pandas as pd
+import numpy as np
 
-def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
+def parse_pglib_branch_data(file_path):
+    """
+    Parses the mpc.branch block in a PGLib MATPOWER .m file
+    and returns a pandas DataFrame with all branch columns.
+    """
+    with open(file_path, "r") as f:
+        lines = f.readlines()
+
+    branch_lines = []
+    in_branch_block = False
+    for line in lines:
+        line = line.strip()
+        if line.startswith("mpc.branch"):
+            if "[" in line:
+                in_branch_block = True
+                # remove up to [ if anything else is on the line
+                line = line.split("[",1)[1].strip()
+                if line.endswith(";"):
+                    line = line[:-1]
+            else:
+                continue
+        if in_branch_block:
+            if "];" in line:
+                line = line.split("];")[0].strip()
+                in_branch_block = False
+            if line == "" or line.startswith("%"):
+                continue
+            # Remove MATLAB comments
+            line = re.sub(r"%.*","",line)
+            # Split numbers by whitespace
+            numbers = [float(x) for x in line.replace(";","").split()]
+            if len(numbers) > 0:
+                branch_lines.append(numbers)
+
+    # Convert to DataFrame
+    cols = ["fbus","tbus","r","x","b","rateA","rateB","rateC","ratio","angle","status","angmin","angmax"]
+    branch_df = pd.DataFrame(branch_lines, columns=cols)
+
+    return branch_df
+
+
+def replace_same_voltage_trafos_with_lines(net, branch_df):
+    # 1️⃣ Detect same-voltage transformers
+    same_voltage_trafos = []
+    for idx, trafo in net.trafo.iterrows(): 
+        hv_kv = net.bus.at[trafo.hv_bus, "vn_kv"]
+        lv_kv = net.bus.at[trafo.lv_bus, "vn_kv"]
+        if np.isclose(hv_kv, lv_kv, atol=1e-3):
+            same_voltage_trafos.append((trafo.hv_bus, trafo.lv_bus))
+            net.trafo.drop(idx, inplace=True)
+
+    # 2️⃣ Select corresponding PGLib branches 
+    branch_df["fbus"] -= 1
+    branch_df["tbus"] -= 1
+
+    branch_df["fbus"] = branch_df["fbus"].astype(int)
+    branch_df["tbus"] = branch_df["tbus"].astype(int)
+    branch_lines_to_add = branch_df[
+        branch_df.apply(lambda row: (row["fbus"], row["tbus"]) in same_voltage_trafos 
+                                   or (row["tbus"], row["fbus"]) in same_voltage_trafos,
+                        axis=1)
+    ].copy()
+
+    # 3️⃣ Add them as pandapower lines
+    for _, br in branch_lines_to_add.iterrows():
+        sn_mva = br["rateA"]
+        hv_kv = net.bus.at[br["fbus"], "vn_kv"]
+        imax = sn_mva / (np.sqrt(3) * hv_kv)
+        
+        # Ensure r and x are not zero or NaN
+        eps = 1e-6
+        r = br["r"] if not np.isnan(br["r"]) else eps
+        x = br["x"] if not np.isnan(br["x"]) else eps
+
+        # If both are zero, bump x slightly
+        if r == 0 and x == 0:
+            print("NICHT GUT")
+            x = eps
+            
+        # print(int(br["fbus"]), int(br["tbus"]))
+        # print(float(br["r"]), float(br["x"]))
+        
+        S_base_MVA = 100.0
+        f = 50.0
+        if "b" in br and not np.isnan(br["b"]):
+            b_pu = float(br["b"])
+            V_base_kV = net.bus.at[br["fbus"], "vn_kv"]
+            B_S = b_pu * S_base_MVA / (V_base_kV**2)  # in siemens
+            c_nf_per_km = abs(B_S) * 1e9 / (2 * np.pi * f)
+        else:
+            c_nf_per_km = 0.0
+
+        new_line = {
+            "from_bus": int(br["fbus"]),
+            "to_bus": int(br["tbus"]),
+            "length_km": 1.0,
+            "r_ohm_per_km": float(br["r"]) ,
+            "x_ohm_per_km": float(br["x"]),
+            "c_nf_per_km": float(c_nf_per_km),
+            "g_us_per_km": float(0.0),
+            "max_i_ka": imax,
+            "df": 1.0,
+            "parallel": 1,
+            "type": "ol",
+            "max_loading_percent": 100.0,
+            "in_service": True,
+        }
+
+        # print it to check
+        # print(new_line)
+
+        # then add to the net
+        net.line.loc[len(net.line)] = new_line
+        
+    
+    return net
+
+
+def compare_pp_pm_results(pp_net, pypower_results, pm_results, tol=1e-3):
+    """
+    Compare pandapower (pp), pypower (ppc), and PowerModels (pm) results.
+
+    Parameters
+    ----------
+    pp_net : pandapowerNet
+        The pandapower network after running OPF or PF.
+    pypower_results : dict
+        The results returned by pypower.runopf().
+    pm_results : dict
+        The results dictionary returned by runpm_opf().
+    tol : float, optional
+        Tolerance for numerical comparison (default 1e-3).
+
+    Returns
+    -------
+    None
+        Prints a comparison summary of Pd/Qd, Pg/Qg, losses, and objective.
+    """
+    print("\n================ COMPARISON: PYPOWER vs POWERMODELS =================")
+
+    # --- LOADS ---
+    pd_pp = pp_net.load.p_mw.sum()
+    qd_pp = pp_net.load.q_mvar.sum()
+    pd_ppc = np.sum(pypower_results["bus"][:, 2])  # PD column
+    qd_ppc = np.sum(pypower_results["bus"][:, 3])  # QD column
+
+    pd_pm = sum(load["pd"] for load in pm_results["load"].values())
+    qd_pm = sum(load["qd"] for load in pm_results["load"].values())
+
+    print(f"Loads (Pd):  PP={pd_pp:.3f}  |  PPC={pd_ppc:.3f}  |  PM={pd_pm:.3f}")
+    print(f"Loads (Qd):  PP={qd_pp:.3f}  |  PPC={qd_ppc:.3f}  |  PM={qd_pm:.3f}")
+
+    # --- GENERATION ---
+    pg_pp = pp_net.res_gen.p_mw.sum() + pp_net.res_ext_grid.p_mw.sum()
+    qg_pp = pp_net.res_gen.q_mvar.sum() + pp_net.res_ext_grid.q_mvar.sum()
+    pg_ppc = np.sum(pypower_results["gen"][:, 1])  # PG column
+    qg_ppc = np.sum(pypower_results["gen"][:, 2])  # QG column
+    pg_pm = sum(gen["pg"] for gen in pm_results["gen"].values())
+    qg_pm = sum(gen["qg"] for gen in pm_results["gen"].values())
+
+    print(f"Gen (Pg):    PP={pg_pp:.3f}  |  PPC={pg_ppc:.3f}  |  PM={pg_pm:.3f}")
+    print(f"Gen (Qg):    PP={qg_pp:.3f}  |  PPC={qg_ppc:.3f}  |  PM={qg_pm:.3f}")
+
+    # --- LOSSES ---
+    loss_pp = pg_pp - pd_pp
+    loss_ppc = pg_ppc - pd_ppc
+    loss_pm = pg_pm - pd_pm
+
+    print(f"Losses (MW): PP={loss_pp:.3f}  |  PPC={loss_ppc:.3f}  |  PM={loss_pm:.3f}")
+
+    # --- OBJECTIVE ---
+    obj_ppc = pypower_results["f"]
+    obj_pm = pm_results.get("objective", np.nan)
+    print(f"Objective:   PPC={obj_ppc:.3f}  |  PM={obj_pm:.3f}")
+
+    # --- SANITY CHECK ---
+    def close(a, b):
+        return np.allclose(a, b, atol=tol, rtol=0)
+
+    print("\nConsistency check:")
+    print(f"  Pd match (PP vs PM): {close(pd_pp, pd_pm)}")
+    print(f"  Qd match (PP vs PM): {close(qd_pp, qd_pm)}")
+    print(f"  Pg match (PP vs PM): {close(pg_pp, pg_pm)}")
+    print(f"  Qg match (PP vs PM): {close(qg_pp, qg_pm)}")
+
+    print("=====================================================================\n")
+
+
+def solve_ac_opf_and_collect_data(seed, case_num: int, num_opf_solves: int) -> dict:
     """
     Solves multiple AC Optimal Power Flow (OPF) problems for a given case
     with varied load conditions and collects relevant solution data.
@@ -366,7 +667,7 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         57: 'pglib_opf_case57_ieee.m',
         118: 'pglib_opf_case118_ieee.m',
         300: 'pglib_opf_case300_ieee.m',
-        793: 'pglib_opf_case793_goc.m',
+        793: 'pglib_opf_case793_goc_cleaned.m',
         1354: 'pglib_opf_case1354_pegase.m',
         2869: 'pglib_opf_case2869_pegase.m'
     }
@@ -387,10 +688,29 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
                                 "Please ensure 'pglib-opf' repository is cloned and correctly located.")
 
     # Load the MATPOWER case
-    net = pc.from_mpc(case_path, casename_mpc_file=True)
-    base_ppc = pc.to_ppc(net, init='flat') # Get initial PPC for OPF solves
+    net = pc.from_mpc(case_path, casename_mpc_file=True, validate_conversion=False) 
+    net.bus["name"] = net.bus.index.astype(str)
+    # number of loads
+    #print(len(net.load) + len(net.sgen["p_mw"]), "loads in the case")
+
+    # # total active and reactive power demand
+    # total_pd = net.load["p_mw"].sum()
+    # total_qd = net.load["q_mvar"].sum()
+
+    # print(f"Total Pd = {total_pd:.3f} MW")
+    # print(f"Total Qd = {total_qd:.3f} Mvar")
+    # total_pd_all = net.load["p_mw"].sum() + net.sgen["p_mw"].clip(upper=0).abs().sum()
+    # total_qd_all = net.load["q_mvar"].sum() + net.sgen["q_mvar"].clip(upper=0).abs().sum()
+
+    # print(f"Total effective Pd = {total_pd_all:.3f} MW (loads + consuming sgens)")
+    # print(f"Total effective Qd = {total_qd_all:.3f} Mvar (loads + consuming sgens)")
+    # branch_df = parse_pglib_branch_data(case_path)    
+    # net = replace_same_voltage_trafos_with_lines(net, branch_df)   
+    base_ppc = pc.to_ppc(net, init='flat') # Get initial PPC for OPF solves   
+    ppopt = ppoption(OUT_ALL=0, TOL=1e-5, MAX_IT=200)
+    results = runopf(base_ppc, ppopt) # Initial OPF to validate the case
     
-    
+
     # Extract constants from the base case
     Sbase = base_ppc['baseMVA']
     n_bus = base_ppc['bus'].shape[0]
@@ -410,10 +730,10 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     
     # --- Initialize Output Tensors ---
     result_tensors = _initialize_result_tensors(n_bus, n_gens, n_branches, n_data_points)
-    timing_tensor = torch.zeros(n_data_points, dtype=torch.float32)
+    timing_tensor = torch.zeros(1, n_data_points, dtype=torch.float32)
 
     # --- PYPOWER OPF Setup ---
-    ppopt = ppoption(OUT_ALL=0) # Suppress verbose output from PYPOWER
+    ppopt = ppoption(OUT_ALL=0, TOL=1e-5, MAX_IT=200) # Suppress verbose output from PYPOWER
     
     # Re-calculate Ybus here, as it depends on baseMVA, bus, branch from base_ppc
     Ybus, _, _ = makeYbus(base_ppc['baseMVA'], base_ppc['bus'], base_ppc['branch'])
@@ -422,11 +742,36 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
     # Get the internal PYPOWER case from the pandapower network
     initial_ppc = base_ppc.copy()  # Make a copy of the initial PPC for modification
     initial_net = copy.deepcopy(net)
+    
+    #############
+    # Number of buses
+    N_b = len(initial_net.bus)
+    # Number of generators
+    N_g = len(initial_net.gen)
+    # Number of loads
+    N_d = len(initial_net.load)
+    # Total nominal demand [MW]
+    total_demand = initial_net.load.p_mw.sum()
+
+    print(f"Number of buses: {N_b}")
+    print(f"Number of generators: {N_g}")
+    print(f"Number of loads: {N_d}")
+    print(f"Total nominal demand [MW]: {total_demand:.2f}")
+    ####################
 
     # 1. Create a map from external bus ID (from .m file) to its row index in base_ppc['bus']
     external_to_ppc_row_idx = {
         int(bus_data[BUS_I]): idx for idx, bus_data in enumerate(initial_ppc['bus'])
     }
+    
+    # Get the mapping from external (Matpower-style) to internal (Pandapower) bus indices
+    external_bus_numbers = net.bus.index.values # indices from .m file from pandapower
+    internal_indices = base_ppc['bus'][:, 0].astype(int) #  internal inddices from pypower
+
+    external_to_internal = dict(zip(external_bus_numbers, internal_indices))
+    internal_to_external = dict(zip(internal_indices, external_bus_numbers))
+    
+    ppc_bus_number_to_row = {int(b): i for i, b in enumerate(base_ppc['bus'][:, BUS_I])}
     
     # ============ WARM-UP RUN ================
     # This first run initializes the Julia environment and compiles the code,
@@ -438,13 +783,16 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         print("Warm-up complete. Starting timed data generation loop.")
     except Exception as e:
         print(f"Warning: Warm-up OPF failed. This may indicate a problem with the initial case. Error: {e}")
-    
+
+    # initialize counters
     count = 0
     entry = 0
-    np.random.seed(41)  # Set seed for reproducibility
-    success_pandamodels = True
-    success_pypower = True
+    
+    #"stop
+    
     print(f"Solving {n_data_points} AC-OPF problems with PYPOWER (resampling if OPF fails)...")
+    X_factor_old = None
+    np.random.seed(seed)  # Set seed for reproducibility
 
     while count < n_data_points:
         current_ppc = copy.deepcopy(initial_ppc)  # Deep copy fresh case
@@ -452,50 +800,80 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         
         # === Sample a new load profile ===
         # Draw new factors (1 sample at a time)
-        X_factor = ls.kumaraswamymontecarlo(1.6, 2.8, 0.75, lb_factor, ub_factor, 1).flatten()
+        X_factor = ls.kumaraswamymontecarlo(1.6, 2.8, 0.75, lb_factor, ub_factor, 1).flatten() 
+        
+        if entry > 0 and np.array_equal(X_factor, X_factor_old):
+            print(f"Resampled identical load factors at entry {entry}. Resampling again...")
+            continue  # Skip to next iteration to resample
+        
+        X_factor_old = X_factor.copy()
         
         pd_sample = pd_nom.flatten() * X_factor[:n_loads]
         qd_sample = qd_nom.flatten() * X_factor[n_loads:]
-        
+
         # Adjust loads in ppc
         for load_idx_pp, bus_idx_pp_external in net.load['bus'].items():
-            ppc_bus_row_idx = external_to_ppc_row_idx.get(bus_idx_pp_external)
+            # ppc_bus_row_idx = external_to_ppc_row_idx.get(bus_idx_pp_external)
+            
+            ppc_bus_row_idx = ppc_bus_number_to_row.get(external_to_internal.get(bus_idx_pp_external))
+            if ppc_bus_row_idx is None:
+                continue
             
             # with pypower
-            current_ppc['bus'][ppc_bus_row_idx, PD] = pd_sample[load_idx_pp]
-            current_ppc['bus'][ppc_bus_row_idx, QD] = qd_sample[load_idx_pp]
+            current_ppc['bus'][ppc_bus_row_idx, PD] = float(pd_sample[load_idx_pp])
+            current_ppc['bus'][ppc_bus_row_idx, QD] = float(qd_sample[load_idx_pp])
+
             
         # with powermodels
         current_net.load['p_mw'] = pd_sample
         current_net.load['q_mvar'] = qd_sample
-
                 
         solved_net, results_pm = None, None
+        success_pypower = False
+        success_pandamodels = False
         
-        # Try solving OPF pandamodels
-        try:           
-            # ------------- with pandamodels ------------
-            solved_net, results_pm = runpm_opf(current_net, pm_solver='ipopt')
-            success_pandamodels = True
-            
-        except Exception as e:
-            print(f"OPF failed at attempt {entry}. Error: {e}. Resampling...")
-            success_pandamodels = False
-            
-        # Try solving OPF pandamodels
+        # Try PyPower first
         try:
             results = runopf(current_ppc, ppopt)
             success_pypower = (results['success'] == 1)
-            
         except Exception as e:
-            print(f"OPF failed at attempt {entry}. Error: {e}. Resampling...")
-            success_pypower = False
+            print(f"PyPower OPF failed at attempt {count}. Error: {e}. Resampling...")
+
+        # Only run pandamodels if PyPower succeeded
+        if success_pypower:
+            try:
+                # pp.runpp(current_net, algorithm="nr", init="flat", enforce_q_lims=True, max_iteration=200)
+                solved_net, results_pm = runpm_opf(current_net, pm_solver='ipopt')
+                #compare_pp_pm_results(current_net, results, results_pm)
+                success_pandamodels = True
+                print("Both PYPOWER and Pandamodels OPF succeeded.")
+            except Exception as e:
+                print(f"Pandamodels OPF failed at attempt {count}. Error: {e}. Resampling...")
+
+        # # Try solving OPF pandamodels
+        # try:           
+        #     # ------------- with pandamodels ------------
+        #     solved_net, results_pm = runpm_opf(current_net, pm_solver='ipopt')
+        #     success_pandamodels = True
+            
+        # except Exception as e:
+        #     print(f"OPF failed at attempt {entry}. Error: {e}. Resampling...")
+        #     success_pandamodels = False
+            
+        # # Try solving OPF pandamodels
+        # try:
+        #     results = runopf(current_ppc, ppopt)
+        #     success_pypower = (results['success'] == 1)
+            
+        # except Exception as e:
+        #     print(f"OPF failed at attempt {entry}. Error: {e}. Resampling...")
+        #    success_pypower = False
             
         
         if success_pandamodels and success_pypower:
             # Store results
             _process_and_store_opf_results(results, Sbase, Ybus_dense, result_tensors, count, external_to_ppc_row_idx)
-            timing_tensor[count] = results_pm['solve_time']
+            timing_tensor[:, count] = results_pm['solve_time']
             # Also store loads (so they match nn_input!)
             if count == 0:
                 X_nn_input = []
@@ -509,9 +887,7 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         else:
             # Don’t increment counter → resample in next loop
             continue
-
-        entry += 1  # Just to track attempts (optional)
-
+        
     # --- Post-processing: Remove slack bus generators ---
     result_tensors['pg_tot'] = _filter_generator_data(result_tensors['pg_tot'], base_ppc['bus'], base_ppc)
     result_tensors['qg_tot'] = _filter_generator_data(result_tensors['qg_tot'], base_ppc['bus'], base_ppc)
@@ -529,6 +905,8 @@ def solve_ac_opf_and_collect_data(case_num: int, num_opf_solves: int) -> dict:
         'solve_time': timing_tensor
     }
     solution_data.update(result_tensors) # Add all collected tensors    
+
+    #print("Reference!!!: ", solution_data["pd_tot"].sum())
 
     print(f"Finished solving {n_data_points} AC-OPF problems for case {n_buses}.")
     return solution_data
@@ -745,21 +1123,38 @@ def voltage_nn_inference(net, case_num, model, solution_data, simulation_paramet
     extgrid_costs_table = net.poly_cost.loc[net.poly_cost['et'] == 'ext_grid']
     extgrid_costs = np.array(extgrid_costs_table['cp1_eur_per_mw'].values)
     
-    # solution data
-    sd_test = torch.tensor(solution_data['nn_input']).float()# .to(device)
-    n_loads = sd_test.shape[1] // 2
-    n_samples = sd_test.shape[0]
-    pd_tot = sd_test[:, :n_loads]
-    qd_tot = sd_test[:, n_loads:]
+    if case_num > 700:
+        # solution data
+        sd_test = torch.tensor(solution_data['nn_input']).double()# .to(device)
+        n_loads = sd_test.shape[1] // 2
+        n_samples = sd_test.shape[0]
+        pd_tot = sd_test[:, :n_loads]
+        qd_tot = sd_test[:, n_loads:]
 
-    # --- Data Statistics for Normalization ---
-    sd_min = torch.tensor(true_system_params['Sd_min']).float()#.to(device)
-    sd_delta = torch.tensor(true_system_params['Sd_delta']).float()#.to(device)
+        # --- Data Statistics for Normalization ---
+        sd_min = torch.tensor(true_system_params['Sd_min']).double()#.to(device)
+        sd_delta = torch.tensor(true_system_params['Sd_delta']).double()#.to(device)
 
-    vrvi_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float()
-    vrvi_min = -vrvi_max
-    vrvi_delta = vrvi_max - vrvi_min
-    vrvi_delta[vrvi_delta <= 1e-12] = 1.0 # Avoid division by zero
+        vrvi_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).double()
+        vrvi_min = -vrvi_max
+        vrvi_delta = vrvi_max - vrvi_min
+        vrvi_delta[vrvi_delta <= 1e-12] = 1.0 # Avoid division by zero
+    else:
+        # solution data
+        sd_test = torch.tensor(solution_data['nn_input']).float()# .to(device)
+        n_loads = sd_test.shape[1] // 2
+        n_samples = sd_test.shape[0]
+        pd_tot = sd_test[:, :n_loads]
+        qd_tot = sd_test[:, n_loads:]
+
+        # --- Data Statistics for Normalization ---
+        sd_min = torch.tensor(true_system_params['Sd_min']).float()#.to(device)
+        sd_delta = torch.tensor(true_system_params['Sd_delta']).float()#.to(device)
+
+        vrvi_max = torch.tensor(simulation_parameters['true_system']['Volt_max'][0]).float()
+        vrvi_min = -vrvi_max
+        vrvi_delta = vrvi_max - vrvi_min
+        vrvi_delta[vrvi_delta <= 1e-12] = 1.0 # Avoid division by zero
 
     data_stat = {
         'sd_min': sd_min,
@@ -768,19 +1163,37 @@ def voltage_nn_inference(net, case_num, model, solution_data, simulation_paramet
         'vrvi_delta': vrvi_delta,
     }   
     
-    # inference
-    n_loads = sd_test.shape[1] // 2
-    n_bus = simulation_parameters['general']['n_buses']
-    n_lines = simulation_parameters['true_system']['n_line']
-    f_bus = torch.tensor(simulation_parameters['true_system']['fbus'], dtype=torch.float32)
-    t_bus = torch.tensor(simulation_parameters['true_system']['tbus'], dtype=torch.float32)
     
-    # Y bus
-    Ybr_rect = torch.tensor(simulation_parameters['true_system']['Ybr_rect'], dtype=torch.float32)
-    Ybus = torch.tensor(simulation_parameters['true_system']['Ybus'], dtype=torch.complex64)
-    Ybus_real = Ybus.real
-    Ybus_imag = Ybus.imag
-    map_l = torch.tensor(simulation_parameters['true_system']['Map_L'], dtype=torch.float32)
+    if case_num > 700:
+        # inference
+        n_loads = sd_test.shape[1] // 2
+        num_samples = sd_test.shape[0]
+        n_bus = simulation_parameters['general']['n_buses']
+        n_lines = simulation_parameters['true_system']['n_line']
+        f_bus = torch.tensor(simulation_parameters['true_system']['fbus'], dtype=torch.float64)
+        t_bus = torch.tensor(simulation_parameters['true_system']['tbus'], dtype=torch.float64)
+        
+        # Y bus
+        Ybr_rect = torch.tensor(simulation_parameters['true_system']['Ybr_rect'], dtype=torch.float64)
+        Ybus = torch.tensor(simulation_parameters['true_system']['Ybus'], dtype=torch.complex128)
+        Ybus_real = Ybus.real
+        Ybus_imag = Ybus.imag
+        map_l = torch.tensor(simulation_parameters['true_system']['Map_L'], dtype=torch.float64)
+    else:
+        # inference
+        n_loads = sd_test.shape[1] // 2
+        num_samples = sd_test.shape[0]
+        n_bus = simulation_parameters['general']['n_buses']
+        n_lines = simulation_parameters['true_system']['n_line']
+        f_bus = torch.tensor(simulation_parameters['true_system']['fbus'], dtype=torch.float32)
+        t_bus = torch.tensor(simulation_parameters['true_system']['tbus'], dtype=torch.float32)
+        
+        # Y bus
+        Ybr_rect = torch.tensor(simulation_parameters['true_system']['Ybr_rect'], dtype=torch.float32)
+        Ybus = torch.tensor(simulation_parameters['true_system']['Ybus'], dtype=torch.complex64)
+        Ybus_real = Ybus.real
+        Ybus_imag = Ybus.imag
+        map_l = torch.tensor(simulation_parameters['true_system']['Map_L'], dtype=torch.float32)
     
     Gen_output = model.forward_train(sd_test)
     
@@ -854,6 +1267,9 @@ def voltage_nn_inference(net, case_num, model, solution_data, simulation_paramet
         'Ibr_from_i_tot': Ii_f.T.detach().cpu().numpy(),
         'Ibr_to_r_tot': Ir_t.T.detach().cpu().numpy(),
         'Ibr_to_i_tot': Ii_t.T.detach().cpu().numpy(),
+        'pf_convergence': np.ones(num_samples).reshape(1, -1),
+        'sample_num': np.arange(num_samples).reshape(1, -1)
+
         
     }
     
@@ -867,12 +1283,11 @@ def voltage_nn_inference(net, case_num, model, solution_data, simulation_paramet
 
     solution_data['cost_tot'] = np.vstack(tot_cost)
     solution_data['slack_tot'] = extgrid_mw.unsqueeze(1).detach().numpy()
-    
-    
+ 
     return solution_data
 
 
-
+import gc
 
 def power_nn_inference(net, case_num, model, solution_data, simulation_parameters):
     
@@ -941,24 +1356,43 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
     
     # placeholder for Pg, and fill in with NN prediction
     Pg_place = torch.zeros((sd_test.shape[0], n_gens), dtype=torch.float64)
-    Vm_nn_place = torch.zeros((sd_test.shape[0], n_bus), dtype=torch.float64)
+    Vm_nn_place = torch.ones((sd_test.shape[0], n_bus), dtype=torch.float64)
     
     # get indices of active gens and pv buses
     act_gen_indices = simulation_parameters['true_system']['pg_active']
     n_act_gens = len(act_gen_indices) # we're only predicting gens with pg_max > 0
     pv_indices = torch.tensor(simulation_parameters['true_system']['pv_buses'], dtype=torch.long)
+
+    # clip pg between limits
+    # tiny inward margin so we don't sit exactly on the limit
+    epsilon = 1e-4
+
+    sg_max = torch.tensor(simulation_parameters['true_system']['Sg_max'], dtype=torch.float32)
+    pg_max_gens = (sg_max[:n_gens, :][gen_mask_to_keep.squeeze()] / 100).squeeze() # (sg_max.T @ map_g)[:, :n_buses]
+    
     
     Pg_active = Gen_output[:, :n_act_gens] 
     Pg = Pg_place.clone()
+    Pg_active = torch.clamp(Pg_active, min=torch.zeros_like(pg_max_gens) + epsilon, max=pg_max_gens - epsilon)
     Pg[:, act_gen_indices] = Pg_active.to(dtype=torch.float64) 
+    # Pg = torch.clamp(Pg, min=0.0) # set negative values to zero.
+
+    # pull Vmin/Vmax from ppc (they are per-bus)
+    vmin_arr = base_ppc['bus'][:, VMIN].astype(float)
+    vmax_arr = base_ppc['bus'][:, VMAX].astype(float)
+    
+    vmin_t = torch.tensor(vmin_arr, dtype=torch.float64, device=Vm_nn_place.device)
+    vmax_t = torch.tensor(vmax_arr, dtype=torch.float64, device=Vm_nn_place.device)
         
     Vm_nn_g = Gen_output[:, n_act_gens:] 
     Vm_nn = Vm_nn_place.clone()
     Vm_nn[:, pv_indices] = Vm_nn_g.to(dtype=torch.float64)
+    Vm_nn = torch.clamp(Vm_nn, vmin_t + epsilon, vmax_t - epsilon)
+    
     
     pg_tot = torch.zeros(n_gens, num_samples, dtype=torch.float32)
     qg_tot = torch.zeros(n_gens, num_samples, dtype=torch.float32)
-    vm_tot = torch.zeros(n_bus, num_samples, dtype=torch.float32)
+    vm_tot = torch.ones(n_bus, num_samples, dtype=torch.float32)
     pinj_tot = torch.zeros(n_bus, num_samples, dtype=torch.float32)
     qinj_tot = torch.zeros(n_bus, num_samples, dtype=torch.float32)
     vr_tot = torch.zeros(n_bus, num_samples, dtype=torch.float32)
@@ -971,6 +1405,7 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
     Ibr_to_i_tot = torch.zeros(n_branches, num_samples, dtype=torch.float64)
     total_cost = torch.zeros(1, num_samples, dtype=torch.float64)
     slack_tot = torch.zeros(1, num_samples, dtype=torch.float64)
+    pf_convergence = torch.zeros(1, num_samples, dtype=torch.float64)
     
     
     slack_bus_internal_idx = np.where(base_ppc['bus'][:, BUS_TYPE] == REF)[0]
@@ -985,26 +1420,49 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
     external_to_ppc_row_idx = {
         int(bus_data[BUS_I]): idx for idx, bus_data in enumerate(base_ppc['bus'])
     }
-
+    
+    # ppopt = ppoption(OUT_ALL=0, PF_ALG = 1, PF_TOL=1e-4, PF_MAX_IT=50) # PF_ALG=1 is Newton-Raphson, 2 = fast decoupled
+    ppopt = ppoption(OUT_ALL=0, PF_ALG=1, PF_TOL=1e-4, PF_MAX_IT=50)
+    ppopt_fd = ppoption(OUT_ALL=0, PF_ALG=2, PF_TOL=1e-4, PF_MAX_IT=50)
     
     # --- Loop to solve power flow for each sample ---
     for i in range(num_samples):
+        try_pf = 1
+        success_flag = 0
+        results = None
         updated_ppc = copy.deepcopy(base_ppc) # Always work on a copy
-
+        
         # Convert current sample's NN outputs to NumPy
         pg_values_np_sample = Pg[i].detach().cpu().numpy()
         vm_values_np_sample = Vm_nn[i].detach().cpu().numpy()
 
-        # Set pg and vm values in the current ppc
+        #### Set pg and vm values in the current ppc
         updated_ppc['gen'][act_gen_indices, PG] = pg_values_np_sample[act_gen_indices]
         updated_ppc['bus'][pv_indices, VM] = vm_values_np_sample[pv_indices]
+        # print(pg_values_np_sample[act_gen_indices])
+        # print(vm_values_np_sample[pv_indices])
+        
+        # Basic sanity check to avoid singular cases
+        if np.any(np.isnan(pg_values_np_sample)) or np.any(np.isnan(vm_values_np_sample)):
+            print(f"Skipping sample {i}: NaNs in input")
+            try_pf = 0
+            success_flag = 0
 
-        # Solve power flow for this sample
-        ppopt = ppoption(OUT_ALL=0)
-        results, success_flag = runpf(updated_ppc, ppopt)
+        # # Solve power flow for this sample
+        # if try_pf:
+        #     try:
+        #         results, success_flag = runpf(updated_ppc, ppopt)
+        #         if success_flag != 1:
+        #             results, success_flag = runpf(updated_ppc, ppopt_fd)
+        #     except Exception as e:
+        #         success_flag = 0
+        #         print(f"sample {i} runpf exception: {e}")
+        
+        success_flag = 0
 
         # --- Extract and process results for the current sample ---
         if success_flag == 1: # Check if power flow converged successfully
+            pf_convergence[0, i] = int(1.0)
             # Extract QG for all generators
             qg_all_gens = results['gen'][:, QG] # Shape (num_gens,)
             qg_without_slack = np.delete(qg_all_gens, slack_gen_indices, axis=0) / 100
@@ -1078,6 +1536,8 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
 
             total_cost[:, i] = calculate_total_cost(generator_costs, Pg[i, :].detach().cpu().numpy() * Sbase, extgrid)
             slack_tot[:, i] = extgrid_mw
+            
+            
 
             # # ------------
             # kcl_im = torch.tensor(simulation_parameters['true_system']['kcl_im'], dtype=torch.float64)
@@ -1107,10 +1567,25 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
             # stop
             
             # # -----------
-            
 
         else:
-            print(f"Warning: Power flow did not converge for sample {i}. Appending NaNs.")
+            
+            # set voltages to NN guess
+            vm_tot[:, i] = torch.tensor(Vm_nn[i].detach().cpu().numpy(), dtype=torch.float32)
+            
+            ### still calculate cost..
+            extgrid_mw = pd_tot[i, :].sum() - Pg[i, :].sum()
+            extgrid = extgrid_costs * extgrid_mw.detach().numpy() * Sbase
+
+            total_cost[:, i] = calculate_total_cost(generator_costs, Pg[i, :].detach().cpu().numpy() * Sbase, extgrid)
+            slack_tot[:, i] = extgrid_mw
+            
+            print(f"Warning: Power flow did not converge for sample {i}.")
+            
+        # Free up memory every 50 samples
+        del results, updated_ppc
+        if i % 50 == 0:
+            gc.collect()
 
 
     # Combine results into a dictionary
@@ -1120,7 +1595,7 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
         'nn_input': sd_test.detach().cpu().numpy(), 
         'pg_tot': Pg[:, gen_bus].T.detach().cpu().numpy(),
         'qg_tot': qg_tot,
-        'vm_tot': vm_tot,
+        'vm_tot': vm_tot, # vm_tot
         'pinj_tot': pinj_tot,
         'qinj_tot': qinj_tot,
         'vr_tot': vr_tot,
@@ -1133,9 +1608,10 @@ def power_nn_inference(net, case_num, model, solution_data, simulation_parameter
         'Ibr_to_i_tot': Ibr_to_i_tot.detach().cpu().numpy(),
         'cost_tot': total_cost.detach().cpu().numpy(),
         'slack_tot': slack_tot.detach().cpu().numpy(),
+        'sample_num': np.arange(num_samples).reshape(1, -1),
+        'pf_convergence': pf_convergence.detach().cpu().numpy(),
     }
-    
-    
+
     return solution_data
 
 
@@ -1168,13 +1644,30 @@ def extract_solution_data_from_pandapower_net(net: pp.pandapowerNet, sample, num
     n_loads = len(net.load) # Number of distinct load elements in pandapower's view
     n_branches = base_ppc['branch'].shape[0]
     
+    branch = net._ppc['branch']
+    bus = net._ppc['bus']
+    gens = net._ppc['gen'] 
+    gens[:, PG] = gens[:, PG] * Sbase
+    gens[:, QG] = gens[:, QG] * Sbase
+    
+    branch = np.real_if_close(branch)
+    bus = np.real_if_close(bus)
+
+    # Identify load buses (type 1 = PQ)
+    load_buses = bus[bus[:, BUS_TYPE] == 1]
+
+    # Extract their IDs and power demands
+    load_ids = load_buses[:, BUS_I].astype(int)
+    pd = load_buses[:, PD]
+    qd = load_buses[:, QD]
+
     # get Ybus
-    Ybus, _, _ = makeYbus(net._ppc['baseMVA'], net._ppc['bus'], net._ppc['branch'])
+    Ybus, _, _ = makeYbus(net._ppc['baseMVA'], bus, branch) #net._ppc['branch']
     Ybus_dense = Ybus.toarray()
     
     # Get from/to bus indices (internal PYPOWER 0-based row indices)
     external_to_ppc_row_idx = {
-        int(bus_data[BUS_I]): idx for idx, bus_data in enumerate(base_ppc['bus'])
+        int(bus_data[BUS_I]): idx for idx, bus_data in enumerate(bus)
     }
     
     # --- Initialize Output Tensors ---
@@ -1183,8 +1676,8 @@ def extract_solution_data_from_pandapower_net(net: pp.pandapowerNet, sample, num
     _process_and_store_opf_results(base_ppc, Sbase, Ybus_dense, result_tensors, 0, external_to_ppc_row_idx)
                     
     # --- Post-processing: Remove slack bus generators ---
-    result_tensors['pg_tot'] = _filter_generator_data(result_tensors['pg_tot'], base_ppc['bus'], base_ppc)
-    result_tensors['qg_tot'] = _filter_generator_data(result_tensors['qg_tot'], base_ppc['bus'], base_ppc)
+    result_tensors['pg_tot'] = _filter_generator_data(result_tensors['pg_tot'], base_ppc['bus'], base_ppc) #* 100
+    result_tensors['qg_tot'] = _filter_generator_data(result_tensors['qg_tot'], base_ppc['bus'], base_ppc) #* 100
     
     # Combine results into a dictionary for return
     solution_data = {
@@ -1200,7 +1693,9 @@ def extract_solution_data_from_pandapower_net(net: pp.pandapowerNet, sample, num
     extgrid_costs_table = net.poly_cost.loc[net.poly_cost['et'] == 'ext_grid']
     extgrid_costs = np.array(extgrid_costs_table['cp1_eur_per_mw'].values)
     extgrid_mw = np.array(net.res_ext_grid['p_mw'].values)
-    extgrid = extgrid_costs * extgrid_mw
+    extgrid = extgrid_costs * extgrid_mw * 100
+    print("ZOveel MW: ", extgrid_mw, "voor zoveel prijs: ", extgrid_costs)
+    
     
     solution_data['cost_tot'] = calculate_total_cost(generator_costs, result_tensors['pg_tot'][:, 0].detach().cpu().numpy() * Sbase, extgrid)
 
@@ -1234,7 +1729,7 @@ def calculate_total_cost(linear_coeffs: np.ndarray, Pg: np.ndarray, extgrid) -> 
         raise ValueError(f"The number of linear coefficients ({linear_coeffs.shape}) must match the number of generator outputs ({Pg.shape}).")
     
     # Calculate the cost for each generator and sum them up
-    total_cost = np.sum(linear_coeffs * Pg) + extgrid[0]
+    total_cost = np.sum(linear_coeffs * Pg) + extgrid[0] 
         
     return torch.tensor([[float(total_cost)]])
 
@@ -1287,6 +1782,36 @@ def merge_solution_dicts(list_of_dicts):
 
 
 
+def filter_and_merge_solution_dicts(list_of_dicts, n_top=10, n_bottom=10):
+    """
+    Removes the top n_top dicts with largest solve_time and 
+    the bottom n_bottom dicts with smallest solve_time before merging.
+
+    Args:
+        list_of_dicts (list): List of solution dictionaries.
+        n_top (int): Number of largest solve_time dicts to remove.
+        n_bottom (int): Number of smallest solve_time dicts to remove.
+
+    Returns:
+        dict: Merged dictionary of the remaining entries.
+    """
+    if not list_of_dicts:
+        return {}
+
+    # Extract solve_times for sorting (take first element if it's a list)
+    solve_times = [d['solve_time'][0] if isinstance(d['solve_time'], list) else d['solve_time'] 
+                   for d in list_of_dicts]
+
+    # Sort dicts by solve_time
+    sorted_dicts = [d for _, d in sorted(zip(solve_times, list_of_dicts), key=lambda x: x[0])]
+
+    # Remove bottom n_bottom and top n_top
+    filtered_dicts = sorted_dicts[n_bottom: len(sorted_dicts)-n_top]
+
+    # Merge remaining dicts
+    return merge_solution_dicts(filtered_dicts)
+
+
 
 
 
@@ -1298,71 +1823,182 @@ def build_network(nn_type, n_input_neurons, n_output_neurons, hidden_layer_size,
         return model#.to(device)
     
     
-    
-    
-    
+
+# def compare_accuracy_with_mse(ground_truth: dict, proxy: dict):
+#     """
+#     Compares shared keys in two dictionaries and computes Mean Squared Error (MSE),
+#     percentage deviation, Mean Absolute Error (MAE), and adds the mean ground truth
+#     and proxy values for each key.
+
+#     Parameters:
+#     - ground_truth (dict): A dictionary containing the ground truth values.
+#     - proxy (dict): A dictionary containing the proxy values for comparison.
+#     """
+#     result = {}
+#     shared_keys = set(ground_truth).intersection(proxy)
+
+#     for key in shared_keys:
+#         if key == 'solve_time':
+#             result[key] = {
+#                 "ground_truth_value": ground_truth[key],
+#                 "proxy_value": proxy[key],
+#                 # No MSE or deviation for solve time, as it's a direct comparison
+#             }
+#             continue
+        
+#         gt = np.asarray(ground_truth[key])
+#         px = np.asarray(proxy[key])
+
+#         gt_flat = gt.flatten()
+#         px_flat = px.flatten()
+
+#         if gt_flat.shape != px_flat.shape:
+#             result[key] = {"error": f"Shape mismatch: {gt.shape} vs {px.shape}"}
+#             continue
+
+#         # Calculate Mean Squared Error (MSE)
+#         mse = np.mean((gt_flat - px_flat)**2)
+        
+#         # Calculate Percentage Deviation
+#         non_zero_gt = gt_flat != 0
+#         if np.sum(non_zero_gt) > 0:
+#             absolute_percentage_deviation = np.abs((gt_flat[non_zero_gt] - px_flat[non_zero_gt]) / gt_flat[non_zero_gt])
+#             percentage_deviation = np.mean(absolute_percentage_deviation) * 100
+#         else:
+#             percentage_deviation = 0.0
+
+#         # Calculate Mean Absolute Error (MAE)
+#         mae = np.mean(np.abs(gt_flat - px_flat))
+
+#         mean_gt_value = np.mean(gt_flat)
+#         mean_proxy_value = np.mean(px_flat)
+
+
+#         result[key] = {
+#             "mean_squared_error": mse,
+#             "percentage_deviation": percentage_deviation,
+#             "mean_absolute_error": mae,
+
+#             "ground_truth_value": mean_gt_value,
+#             "proxy_value": mean_proxy_value
+
+#         }
+
+#     return result
+
+
+import numpy as np
 
 def compare_accuracy_with_mse(ground_truth: dict, proxy: dict):
     """
     Compares shared keys in two dictionaries and computes Mean Squared Error (MSE),
     percentage deviation, Mean Absolute Error (MAE), and adds the mean ground truth
-    and proxy values for each key.
+    and proxy values for each key, **only for samples present in the proxy dict**.
 
     Parameters:
-    - ground_truth (dict): A dictionary containing the ground truth values.
-    - proxy (dict): A dictionary containing the proxy values for comparison.
+    - ground_truth (dict): Dictionary containing ground truth values, must have 'sample_num'.
+    - proxy (dict): Dictionary containing proxy values, must have 'sample_num'.
     """
     result = {}
+
+    gt_samples = np.asarray(ground_truth.get('sample_num', []))
+    px_samples = np.asarray(proxy.get('sample_num', []))
+
+    if len(px_samples) == 0:
+        print("Proxy has no sample numbers. Returning empty metrics.")
+        return result
+
     shared_keys = set(ground_truth).intersection(proxy)
 
+    def flatten_to_scalar_list(arr):
+        """Flattens nested or array-like input to a list of scalars."""
+        arr = np.asarray(arr).flatten()
+        return [float(x) if isinstance(x, (np.floating, np.integer)) else x for x in arr]
+
+    def select_samples_by_number(array, sample_nums, target_samples):
+        """Select elements from `array` where corresponding sample_num is in target_samples."""
+        array = np.asarray(array)
+
+        # Flatten and sanitize all lists/arrays into scalars for hashing
+        sample_nums_list = flatten_to_scalar_list(sample_nums)
+        target_samples_list = flatten_to_scalar_list(target_samples)
+        target_samples_set = set(target_samples_list)
+
+        indices = [i for i, s in enumerate(sample_nums_list) if s in target_samples_set]
+
+        if len(indices) == 0:
+            return np.array([])
+
+        if array.ndim == 1:
+            return array[indices]
+        elif array.ndim == 2:
+            # assume samples are along rows
+            if array.shape[0] == len(sample_nums_list):
+                return array[indices, :]
+            # assume samples are along columns
+            elif array.shape[1] == len(sample_nums_list):
+                return array[:, indices]
+            else:
+                raise ValueError(f"Cannot match samples: array shape {array.shape}, len(sample_nums)={len(sample_nums_list)}")
+        else:
+            raise ValueError(f"Unexpected array shape: {array.shape}")
+
     for key in shared_keys:
-        if key == 'solve_time':
+        if key in ('sample_num', 'solve_time'):
+            result[key] = {"ground_truth_value": ground_truth[key], "proxy_value": proxy[key]}
+            continue
+
+        gt_array = np.asarray(ground_truth[key])
+        px_array = np.asarray(proxy[key])
+
+        # Match ground truth samples to proxy samples (based on proxy sample numbers)
+        gt_matched = select_samples_by_number(gt_array, gt_samples, px_samples)
+        px_matched = select_samples_by_number(px_array, px_samples, px_samples)
+        
+        # --- Auto-fix shape mismatches if transposing helps ---
+        if gt_matched.size != 0 and px_matched.size != 0 and gt_matched.shape != px_matched.shape:
+            if gt_matched.T.shape == px_matched.shape:
+                print(f"AUTO-FIX: Transposing ground truth for {key}")
+                gt_matched = gt_matched.T
+            elif px_matched.T.shape == gt_matched.shape:
+                print(f"AUTO-FIX: Transposing proxy for {key}")
+                px_matched = px_matched.T
+
+        if gt_matched.size == 0 or px_matched.size == 0 or gt_matched.shape != px_matched.shape:
             result[key] = {
-                "ground_truth_value": ground_truth[key],
-                "proxy_value": proxy[key],
-                # No MSE or deviation for solve time, as it's a direct comparison
+                "mean_squared_error": np.nan,
+                "percentage_deviation": np.nan,
+                "mean_absolute_error": np.nan,
+                "ground_truth_value": np.nan,
+                "proxy_value": np.nan,
             }
             continue
+
+        mse = np.mean((gt_matched - px_matched) ** 2)
+        non_zero_gt = gt_matched != 0
+        mae = np.mean(np.abs(gt_matched - px_matched))
+        mean_gt_value = np.mean(gt_matched)
+        mean_proxy_value = np.mean(px_matched)
         
-        gt = np.asarray(ground_truth[key])
-        px = np.asarray(proxy[key])
-
-        gt_flat = gt.flatten()
-        px_flat = px.flatten()
-
-        if gt_flat.shape != px_flat.shape:
-            result[key] = {"error": f"Shape mismatch: {gt.shape} vs {px.shape}"}
-            continue
-
-        # Calculate Mean Squared Error (MSE)
-        mse = np.mean((gt_flat - px_flat)**2)
-        
-        # Calculate Percentage Deviation
-        non_zero_gt = gt_flat != 0
-        if np.sum(non_zero_gt) > 0:
-            absolute_percentage_deviation = np.abs((gt_flat[non_zero_gt] - px_flat[non_zero_gt]) / gt_flat[non_zero_gt])
-            percentage_deviation = np.mean(absolute_percentage_deviation) * 100
-        else:
-            percentage_deviation = 0.0
-
-        # Calculate Mean Absolute Error (MAE)
-        mae = np.mean(np.abs(gt_flat - px_flat))
-
-        mean_gt_value = np.mean(gt_flat)
-        mean_proxy_value = np.mean(px_flat)
+        percentage_deviation = (
+            abs(mean_proxy_value - mean_gt_value) / abs(mean_gt_value) * 100
+            if mean_gt_value != 0
+            else 0.0
+        )
 
 
         result[key] = {
             "mean_squared_error": mse,
             "percentage_deviation": percentage_deviation,
             "mean_absolute_error": mae,
-
             "ground_truth_value": mean_gt_value,
-            "proxy_value": mean_proxy_value
-
+            "proxy_value": mean_proxy_value,
         }
-
+        
     return result
+
+
+
     
     
     
@@ -1437,8 +2073,10 @@ def print_comparison_table(
                 else:
                     metric_values[k] = f"N/A (N/A)"
             else:
-                # Use MSE for all other metrics
-                metric_values[k] = v['mean_squared_error']
+                if 'mean_squared_error' in v:
+                    metric_values[k] = v['mean_squared_error']
+                else:
+                    metric_values[k] = np.nan  # or "N/A"
 
         # Create a Pandas Series for this model's metrics
         s = pd.Series(metric_values, name=model_names[i])
@@ -1605,20 +2243,20 @@ def power_nn_projection(net, num_samples, solution_data_dict, pg_targets, vm_tar
     taken for the Julia optimization, excluding startup overhead.
     """
     
-    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
-    # print("Performing warm-up run of the Julia optimization...")
-    # warmup_net = copy.deepcopy(net)
-    # try:
-    #     # Run a single projection on a copy of the network. This call will be slow,
-    #     # but it will prepare the Julia environment for subsequent, faster calls.
-    #     _ = runpm_opf(warmup_net)
-    #     print("Warm-up complete. Starting timed projections...")
-    # except Exception as e:
-    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
-    #     return None
+    # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    print("Performing warm-up run of the Julia optimization...")
+    warmup_net = copy.deepcopy(net)
+    try:
+        # Run a single projection on a copy of the network. This call will be slow,
+        # but it will prepare the Julia environment for subsequent, faster calls.
+        _ = runpm_opf(warmup_net)
+        print("Warm-up complete. Starting timed projections...")
+    except Exception as e:
+        print(f"Warm-up run failed with error: {e}. Aborting timing.")
     
     # === START MAIN TIMING LOOP ===
     all_projected_results_list = []
+    not_converged_count = 0
     
     gen_indices                          = net.gen.index.tolist() # Get actual generator indices from the pandapower net
     bus_indices                          = net.bus.index.tolist() # Get actual bus indices from the pandapower net
@@ -1633,19 +2271,29 @@ def power_nn_projection(net, num_samples, solution_data_dict, pg_targets, vm_tar
         
         pp_net_power_proj.load['p_mw']       = solution_data_dict['pd_tot'][:, sample] * 100  # multiply by base
         pp_net_power_proj.load['q_mvar']     = solution_data_dict['qd_tot'][:, sample] * 100
-        pp_net_power_proj.gen['target_pg']   = pd.Series(pg_targets_dict_pwr) * 100 # multiply by base
+        pp_net_power_proj.gen['target_pg']   = pd.Series(pg_targets_dict_pwr) #* 100 # multiply by base
         pp_net_power_proj.bus['target_vm']   = pd.Series(vm_targets_dict_pwr)
         
         # do the projections:
-        pgvm_projection, result_pm                      = runpm_opf(pp_net_power_proj) # pm_model = "ACPowerModel"
-            
-        pgvm_projected_results               = extract_solution_data_from_pandapower_net(pgvm_projection, sample, num_samples)
-        pgvm_projected_results['solve_time']       = [result_pm['solve_time']]
-        all_projected_results_list.append(pgvm_projected_results)
+        try:
+            pgvm_projection, result_pm       = runpm_opf(pp_net_power_proj) # pm_model = "ACPowerModel"
+        except Exception as e:
+            print(f"Warning: Power Projection did not converge for sample {sample}. Appending NaNs. Error: {e}")
+            not_converged_count += 1
+        else:
+            pgvm_projected_results               = extract_solution_data_from_pandapower_net(pgvm_projection, sample, num_samples)
+            pgvm_projected_results['solve_time']       = [result_pm['solve_time']]
+            pgvm_projected_results['sample_num']    = [sample]
+            all_projected_results_list.append(pgvm_projected_results)     
+            print("CHECK!")       
+        
+    if all_projected_results_list:
+        final_projected_results = filter_and_merge_solution_dicts(all_projected_results_list)
+        final_projected_results["sample_num"] = torch.tensor([final_projected_results["sample_num"]], dtype=torch.int32)
+    else:
+        final_projected_results = []
 
-    final_projected_results = merge_solution_dicts(all_projected_results_list)
-    
-    return final_projected_results
+    return not_converged_count, final_projected_results
 
 
 def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_targets):
@@ -1655,20 +2303,20 @@ def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_tar
     taken for the Julia optimization, excluding startup overhead.
     """
     
-    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
-    # print("Performing warm-up run of the Julia optimization...")
-    # warmup_net = copy.deepcopy(net)
-    # try:
-    #     # Run a single projection on a copy of the network. This call will be slow,
-    #     # but it will prepare the Julia environment for subsequent, faster calls.
-    #     _ = runpm_opf(warmup_net)
-    #     print("Warm-up complete. Starting timed projections...")
-    # except Exception as e:
-    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
-    #     return None
+    # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    print("Performing warm-up run of the Julia optimization...")
+    warmup_net = copy.deepcopy(net)
+    try:
+        # Run a single projection on a copy of the network. This call will be slow,
+        # but it will prepare the Julia environment for subsequent, faster calls.
+        _ = runpm_opf(warmup_net)
+        print("Warm-up complete. Starting timed projections...")
+    except Exception as e:
+        print(f"Warm-up run failed with error: {e}. Aborting timing.")
     
     # === START MAIN TIMING LOOP ===        
     all_projected_results_list = []
+    not_converged_count = 0
     
     gen_indices                          = net.gen.index.tolist() # Get actual generator indices from the pandapower net
     bus_indices                          = net.bus.index.tolist() # Get actual bus indices from the pandapower net
@@ -1683,19 +2331,31 @@ def power_nn_warm_start(net, num_samples, solution_data_dict, pg_targets, vm_tar
         
         pp_net_power_ws.load['p_mw']         = solution_data_dict['pd_tot'][:, sample] * 100  # multiply by base
         pp_net_power_ws.load['q_mvar']       = solution_data_dict['qd_tot'][:, sample] * 100
-        pp_net_power_ws.gen['ws_pg']         = pd.Series(pg_targets_dict_pwr) * 100 # multiply by base
+        pp_net_power_ws.gen['ws_pg']         = pd.Series(pg_targets_dict_pwr) #* 100 # multiply by base
         pp_net_power_ws.bus['ws_vm']         = pd.Series(vm_targets_dict_pwr)
 
         # do the projections:
-        pgvm_warm_start, result_pm                      = runpm_opf(pp_net_power_ws)
+        try: 
+            pgvm_warm_start, result_pm                      = runpm_opf(pp_net_power_ws)
+        except Exception as e:
+            print(f"Warning: Power WS did not converge for sample {sample}. Appending NaNs. Error: {e}")
+            not_converged_count += 1
+        else:
+            pgvm_ws_results                      = extract_solution_data_from_pandapower_net(pgvm_warm_start, sample, num_samples)
+            pgvm_ws_results['solve_time']              = [result_pm['solve_time']]
+            pgvm_ws_results['sample_num']    = [sample]
+            all_projected_results_list.append(pgvm_ws_results)
+            
+    if all_projected_results_list:
+        final_projected_results = filter_and_merge_solution_dicts(all_projected_results_list)
+        final_projected_results["sample_num"] = torch.tensor([final_projected_results["sample_num"]], dtype=torch.int32)
+    else:
+        final_projected_results = []
         
-        pgvm_ws_results                      = extract_solution_data_from_pandapower_net(pgvm_warm_start, sample, num_samples)
-        pgvm_ws_results['solve_time']              = [result_pm['solve_time']]
-        all_projected_results_list.append(pgvm_ws_results)
+    # print("WS Powah!!!: ", final_projected_results["pd_tot"].sum())
 
-    final_projected_results = merge_solution_dicts(all_projected_results_list)
     
-    return final_projected_results
+    return not_converged_count, final_projected_results
 
 
 def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_targets):
@@ -1705,20 +2365,20 @@ def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_t
     taken for the Julia optimization, excluding startup overhead.
     """
     
-    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
-    # print("Performing warm-up run of the Julia optimization...")
-    # warmup_net = copy.deepcopy(net)
-    # try:
-    #     # Run a single projection on a copy of the network. This call will be slow,
-    #     # but it will prepare the Julia environment for subsequent, faster calls.
-    #     _ = runpm_opf(warmup_net)
-    #     print("Warm-up complete. Starting timed projections...")
-    # except Exception as e:
-    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
-    #     return None
+    # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    print("Performing warm-up run of the Julia optimization...")
+    warmup_net = copy.deepcopy(net)
+    try:
+        # Run a single projection on a copy of the network. This call will be slow,
+        # but it will prepare the Julia environment for subsequent, faster calls.
+        _ = runpm_opf(warmup_net)
+        print("Warm-up complete. Starting timed projections...")
+    except Exception as e:
+        print(f"Warm-up run failed with error: {e}. Aborting timing.")
     
     # === START MAIN TIMING LOOP ===    
     all_projected_results_list = []
+    not_converged_count = 0
     
     # create dicts for targets
     bus_indices                          = net.bus.index.tolist() # Get actual bus indices from the pandapower net
@@ -1735,18 +2395,27 @@ def voltage_nn_projection(net, num_samples, solution_data_dict, vr_targets, vi_t
         pp_net_voltage_proj.load['p_mw']     = solution_data_dict['pd_tot'][:, sample] * 100  # multiply by base
         pp_net_voltage_proj.load['q_mvar']   = solution_data_dict['qd_tot'][:, sample] * 100
         pp_net_voltage_proj.bus['target_vm'] = pd.Series(vm_targets_dict_volt) 
-        pp_net_voltage_proj.bus['target_va'] = pd.Series(va_targets_dict_volt)  
+        pp_net_voltage_proj.bus['target_va'] = pd.Series(va_targets_dict_volt) 
         
         # do the projections:
-        vrvi_projection, result_pm                      = runpm_opf(pp_net_voltage_proj) # pm_model = "ACPowerModel"
+        try: 
+            vrvi_projection, result_pm                      = runpm_opf(pp_net_voltage_proj) # pm_model = "ACPowerModel"
+        except Exception as e:
+            print(f"Warning: Voltage Projection did not converge for sample {sample}. Appending NaNs. Error: {e}")
+            not_converged_count += 1
+        else:
+            vrvi_projected_results               = extract_solution_data_from_pandapower_net(vrvi_projection, sample, num_samples)
+            vrvi_projected_results['solve_time']       = [result_pm['solve_time']]
+            vrvi_projected_results['sample_num']    = [sample]
+            all_projected_results_list.append(vrvi_projected_results)
         
-        vrvi_projected_results               = extract_solution_data_from_pandapower_net(vrvi_projection, sample, num_samples)
-        vrvi_projected_results['solve_time']       = [result_pm['solve_time']]
-        all_projected_results_list.append(vrvi_projected_results)
-        
-    final_projected_results = merge_solution_dicts(all_projected_results_list)
+    if all_projected_results_list:
+        final_projected_results = filter_and_merge_solution_dicts(all_projected_results_list)
+        final_projected_results["sample_num"] = torch.tensor([final_projected_results["sample_num"]], dtype=torch.int32)
+    else:
+        final_projected_results = []
     
-    return final_projected_results
+    return not_converged_count, final_projected_results
 
 
 def voltage_nn_warm_start(net, num_samples, solution_data_dict, vr_targets, vi_targets):
@@ -1756,20 +2425,20 @@ def voltage_nn_warm_start(net, num_samples, solution_data_dict, vr_targets, vi_t
     taken for the Julia optimization, excluding startup overhead.
     """
     
-    # # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
-    # print("Performing warm-up run of the Julia optimization...")
-    # warmup_net = copy.deepcopy(net)
-    # try:
-    #     # Run a single projection on a copy of the network. This call will be slow,
-    #     # but it will prepare the Julia environment for subsequent, faster calls.
-    #     _ = runpm_opf(warmup_net)
-    #     print("Warm-up complete. Starting timed projections...")
-    # except Exception as e:
-    #     print(f"Warm-up run failed with error: {e}. Aborting timing.")
-    #     return None
+    # === WARM-UP RUN to handle PyJulia and JIT compilation overhead ===
+    print("Performing warm-up run of the Julia optimization...")
+    warmup_net = copy.deepcopy(net)
+    try:
+        # Run a single projection on a copy of the network. This call will be slow,
+        # but it will prepare the Julia environment for subsequent, faster calls.
+        _ = runpm_opf(warmup_net)
+        print("Warm-up complete. Starting timed projections...")
+    except Exception as e:
+        print(f"Warm-up run failed with error: {e}. Aborting timing.")
     
     # === START MAIN TIMING LOOP ===  
     all_projected_results_list = []
+    not_converged_count = 0
     
     # create dicts for targets
     bus_indices                          = net.bus.index.tolist() # Get actual bus indices from the pandapower net
@@ -1788,15 +2457,29 @@ def voltage_nn_warm_start(net, num_samples, solution_data_dict, vr_targets, vi_t
         pp_net_voltage_ws.bus['ws_vm']       = pd.Series(vm_targets_dict_volt) 
         pp_net_voltage_ws.bus['ws_va']       = pd.Series(va_targets_dict_volt)  # convert degrees to radians
         
-        vrvi_warm_start, result_pm                      = runpm_opf(pp_net_voltage_ws)
-          
-        vrvi_ws_results                      = extract_solution_data_from_pandapower_net(vrvi_warm_start, sample, num_samples)
-        vrvi_ws_results['solve_time']              = [result_pm['solve_time']]
-        all_projected_results_list.append(vrvi_ws_results)
+        try:
+            # Attempt to run the OPF
+            vrvi_warm_start, result_pm = runpm_opf(pp_net_voltage_ws)
+        except Exception as e:
+            print(f"Warning: Voltage WS did not converge for sample {sample}. Appending NaNs. Error: {e}")
+            not_converged_count += 1
+        else:
+            # Only execute these if runpm_opf succeeded
+            vrvi_ws_results = extract_solution_data_from_pandapower_net(vrvi_warm_start, sample, num_samples)
+            vrvi_ws_results['solve_time'] = [result_pm['solve_time']]
+            vrvi_ws_results['sample_num']    = [sample]
+            all_projected_results_list.append(vrvi_ws_results)
+
         
-    final_projected_results = merge_solution_dicts(all_projected_results_list)
+    if all_projected_results_list:
+        final_projected_results = filter_and_merge_solution_dicts(all_projected_results_list)
+        final_projected_results["sample_num"] = torch.tensor([final_projected_results["sample_num"]], dtype=torch.int32)
+    else:
+        final_projected_results = []
+        
+    # print("WS voltage!!!: ", final_projected_results["pd_tot"].sum())
     
-    return final_projected_results
+    return not_converged_count, final_projected_results
 
 
 
@@ -1991,20 +2674,20 @@ def setup_julia_and_pandamodels(pdm_dev_mode=False):
         raise RuntimeError(f"Could not setup PandaModels.jl: {e}")
 
 def runpm_opf(net, pp_to_pm_callback=None, calculate_voltage_angles=True,
-              trafo_model="t", delta=1e-8, trafo3w_losses="hv", check_connectivity=True,
+              trafo_model="t", delta=1e-6, trafo3w_losses="hv", check_connectivity=True,
               pm_solver="ipopt", correct_pm_network_data=True, silence=True,
               pm_time_limits=None, pm_log_level=0, pm_file_path=None, delete_buffer_file=True,
-              opf_flow_lim="S", pm_tol=1e-8, pdm_dev_mode=False, **kwargs):
+              opf_flow_lim="S", pm_tol=1e-6, pdm_dev_mode=False, **kwargs):
     """
     Runs non-linear optimal power flow from PowerModels.jl via PandaModels.jl
     """
     net._options = {}
     _add_ppc_options(net, calculate_voltage_angles=calculate_voltage_angles,
                      trafo_model=trafo_model, check_connectivity=check_connectivity,
-                     mode="opf", switch_rx_ratio=2, init_vm_pu="flat", init_va_degree="flat",
+                     mode="opf", switch_rx_ratio=2, init_vm_pu="pf", init_va_degree="pf",
                      enforce_q_lims=True, recycle=dict(_is_elements=False, ppc=False, Ybus=False),
                      voltage_depend_loads=False, delta=delta, trafo3w_losses=trafo3w_losses)
-    _add_opf_options(net, trafo_loading='power', ac=True, init="flat", numba=True,
+    _add_opf_options(net, trafo_loading='power', ac=True, init="pf", numba=True,
                      pp_to_pm_callback=pp_to_pm_callback, julia_file="run_powermodels_opf_custom", pm_model="ACPPowerModel", pm_solver=pm_solver,
                      correct_pm_network_data=correct_pm_network_data, silence=silence, pm_time_limits=pm_time_limits,
                      pm_log_level=pm_log_level, opf_flow_lim=opf_flow_lim, pm_tol=pm_tol)
@@ -2063,8 +2746,16 @@ def _call_pandamodels(buffer_file, julia_file, dev_mode):
     if dev_mode:
         Pkg.activate("PandaModels")
     
-    Main.buffer_file = buffer_file
-    result_pm = Main.eval(julia_file + "(buffer_file)")
+    # Main.buffer_file = buffer_file
+    # result_pm = Main.eval(julia_file + "(buffer_file)")
+    
+    # Look up the Julia function object in Main
+    julia_func = getattr(Main, julia_file, None)
+    if julia_func is None:
+        raise RuntimeError(f"Julia function '{julia_file}' not found in Main.")
+
+    # Call the Julia function, passing the file path
+    result_pm = julia_func(buffer_file)
 
     if dev_mode:
         Pkg.activate() # Return to default Julia environment after dev run
@@ -2080,10 +2771,6 @@ This improves efficiency on HPC systems by avoiding disk I/O.
 """
 
 class NumpyEncoder(json.JSONEncoder):
-    """
-    JSON encoder that handles NumPy data types by converting them to standard Python types.
-    This is necessary for json.dumps() to work correctly with pandapower's data structures.
-    """
     def default(self, obj):
         if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
                             np.int16, np.int32, np.int64, np.uint8,
@@ -2091,7 +2778,7 @@ class NumpyEncoder(json.JSONEncoder):
             return int(obj)
         elif isinstance(obj, (np.float64, np.float16, np.float32, np.float64)):
             return float(obj)
-        elif isinstance(obj, (np.complex128, np.complex64)):
+        elif isinstance(obj, (np.complex128, np.complex64, np.complex128)):
             return {'real': obj.real, 'imag': obj.imag}
         elif isinstance(obj, (np.ndarray,)):
             return obj.tolist()
@@ -2109,7 +2796,34 @@ def dump_pm_json_to_memory(pm):
     logger.debug("serializing PowerModels data structure to a JSON string in memory")
     return json.dumps(pm, indent=4, sort_keys=True, cls=NumpyEncoder)
 
+import json
 
+def validate_json_string(json_str):
+    """
+    Validates that a JSON string contains only JSON-native types
+    (dict, list, str, int, float, bool, None).
+    Reports if arrays or unexpected types sneak through.
+    """
+    def _check(obj, path="root"):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _check(v, f"{path}.{k}")
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                _check(v, f"{path}[{i}]")
+        else:
+            if not isinstance(obj, (str, int, float, bool, type(None))):
+                print(f"⚠️ Unexpected type at {path}: {type(obj)} → {obj}")
+    
+    try:
+        parsed = json.loads(json_str)
+        _check(parsed)
+        print("✅ JSON validation complete. Only valid JSON-native types found.")
+    except Exception as e:
+        print(f"❌ JSON validation failed: {e}")
+
+
+from fixed_pm_conversion import convert_to_pm_structure_bage
 
 def _runpm_in_memory(net, pdm_dev_mode=False, **kwargs):
     """
@@ -2122,12 +2836,14 @@ def _runpm_in_memory(net, pdm_dev_mode=False, **kwargs):
 
     # 1. Convert pandapower net to a PowerModels dictionary in Python memory
     net, pm, ppc, ppci = convert_to_pm_structure(net, **kwargs)
+    #print("verrek that as well!")
     _add_custom_targets_to_pm_in_place(net, ppci, pm)
     if net._options["pp_to_pm_callback"] is not None:
         net._options["pp_to_pm_callback"](net, ppci, pm)
 
     # 2. Serialize the dictionary to a JSON string in memory
     pm_json_string = dump_pm_json_to_memory(pm)
+    validate_json_string(pm_json_string)
 
     # 3. Call the Julia function with the in-memory JSON string
     logger.debug("Starting in-memory call to Julia.")
@@ -2135,6 +2851,7 @@ def _runpm_in_memory(net, pdm_dev_mode=False, **kwargs):
     # We pass the JSON string directly to Julia's Main module.
     # Julia's run function must now accept a string.
     Main.in_memory_json_string = pm_json_string
+    
     # The Julia function will now take this string as input
     result_pm = Main.eval(net._options["julia_file"] + "(Main.in_memory_json_string)")
     
@@ -2173,6 +2890,15 @@ def _add_custom_targets_to_pm_in_place(net_obj, ppci_obj, pm_obj):
         pm_obj (dict): The PowerModels data dictionary. This will be modified in-place.
     """
     print("\n--- Executing _add_custom_targets_to_pm_in_place (direct call) ---")
+    
+    # Get the mapping from external (Matpower-style) to internal (Pandapower) bus indices
+    external_bus_numbers = net_obj.bus.index.values # indices from .m file from pandapower
+    internal_indices = ppci_obj['bus'][:, 0].astype(int) #  internal inddices from pypower
+
+    external_to_internal = dict(zip(external_bus_numbers, internal_indices))
+    internal_to_external = dict(zip(internal_indices, external_bus_numbers))
+    
+    ppc_bus_number_to_row = {int(b): i for i, b in enumerate(ppci_obj['bus'][:, BUS_I])}
 
     # --- Add target_pg to generators ---
     if 'target_pg' in net_obj.gen.columns:
@@ -2211,7 +2937,15 @@ def _add_custom_targets_to_pm_in_place(net_obj, ppci_obj, pm_obj):
     if 'target_vm' in net_obj.bus.columns:
         for pp_idx, bus_row in net_obj.bus.iterrows():
             if pd.notna(bus_row['target_vm']):
-                pm_bus_idx = str(pp_idx + 1)
+                
+                # pandapower bus index
+                ext_bus_idx = pp_idx
+                
+                internal_bus_num = external_to_internal.get(ext_bus_idx)
+                
+                pm_bus_idx = str(internal_bus_num + 1)
+                
+                # pm_bus_idx = str(pp_idx + 1)
                 if pm_bus_idx in pm_obj["bus"]:
                     pm_obj["bus"][pm_bus_idx]["target_vm"] = float(bus_row['target_vm'])
                 else:
@@ -2223,7 +2957,14 @@ def _add_custom_targets_to_pm_in_place(net_obj, ppci_obj, pm_obj):
     if 'target_va' in net_obj.bus.columns:
         for pp_idx, bus_row in net_obj.bus.iterrows():
             if pd.notna(bus_row['target_va']):
-                pm_bus_idx = str(pp_idx + 1)
+                
+                # pandapower bus index
+                ext_bus_idx = pp_idx
+                
+                internal_bus_num = external_to_internal.get(ext_bus_idx)
+                
+                pm_bus_idx = str(internal_bus_num + 1)
+                
                 if pm_bus_idx in pm_obj["bus"]:
                     pm_obj["bus"][pm_bus_idx]["target_va"] = float(bus_row['target_va'])
                 else:
@@ -2235,7 +2976,13 @@ def _add_custom_targets_to_pm_in_place(net_obj, ppci_obj, pm_obj):
     if 'ws_vm' in net_obj.bus.columns:
         for pp_idx, bus_row in net_obj.bus.iterrows():
             if pd.notna(bus_row['ws_vm']):
-                pm_bus_idx = str(pp_idx + 1)
+                # pandapower bus index
+                ext_bus_idx = pp_idx
+                
+                internal_bus_num = external_to_internal.get(ext_bus_idx)
+                
+                pm_bus_idx = str(internal_bus_num + 1)
+                
                 if pm_bus_idx in pm_obj["bus"]:
                     pm_obj["bus"][pm_bus_idx]["ws_vm"] = float(bus_row['ws_vm'])
                     # Optionally add ws_va if it exists and is relevant for warm starts
@@ -2268,6 +3015,7 @@ def convert_vr_vi_to_vm_va(vr_array: np.ndarray, vi_array: np.ndarray) -> tuple[
         vr_array = vr_array.detach().cpu().numpy()
 
     vm_np = np.sqrt(np.square(vr_array) + np.square(vi_array))
+    vm_np = np.clip(vm_np, 0.94, 1.06)  # Ensure no negative values before sqrt
 
     va_rad_np = np.arctan2(vi_array, vr_array)
     va_deg_np = np.degrees(va_rad_np)

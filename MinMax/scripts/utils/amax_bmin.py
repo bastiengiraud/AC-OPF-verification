@@ -892,7 +892,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter, FixedLocator
 
-def plot_static_over_under_errors_quadrant():
+def plot_static_over_under_errors_quadrant(save_path = None):
     # --- Angle domain 0°–90° ---
     angles_deg = np.linspace(0, 90, 500)
     angles_rad = np.deg2rad(angles_deg)
@@ -1006,10 +1006,18 @@ def plot_static_over_under_errors_quadrant():
     ax.legend(fontsize=legend_fontsize, loc="upper center")
 
     plt.tight_layout()
+    if save_path:
+        import os
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(f"{save_path}.pdf", bbox_inches="tight")   # vector
+        fig.savefig(f"{save_path}.svg", bbox_inches="tight")   # vector
+        fig.savefig(f"{save_path}.png", dpi=600, bbox_inches="tight")  # high-res raster
     plt.show()
 
 # Run
-plot_static_over_under_errors_quadrant()
+save_path = r"C:\Users\bagir\OneDrive - Danmarks Tekniske Universitet\Dokumenter\1) Projects\6) AC-OPF verification\amax_bmin"
+
+plot_static_over_under_errors_quadrant(save_path)
 
 
 
