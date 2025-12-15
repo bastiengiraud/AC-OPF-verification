@@ -1,20 +1,53 @@
-# AC Verification Project
+# AC Verification
 
-This repository contains all the code for the AC Verification project, which includes two main components:
+**Minimizing worst-case violations of neural networks for AC Optimal Power Flow during training**
 
-- **MinMax:** The core logic for training the neural networks.
-- **Verification:** The core logic for the verification.
+## 🔍 Overview
 
-## Getting Started
+This repository contains the code for the **AC Verification** project, which focuses on **verification and worst-case analysis of neural networks applied to AC Optimal Power Flow (AC-OPF)** problems.
 
-Under MinMax/Models/best_models you can find the weights of the trained neural networks. The files that end with .._final are the trained neural networks from the 118 bus system from the HPC.
+The project includes two main components:
 
-Under MinMax/scripts/comparison you can see some tables with some comparisons.
+- **MinMax:** Core logic for training neural networks using min–max and worst-case–aware objectives.
+- **Verification:** Core logic for post-training verification and robustness analysis.
 
-Under verification, you can see a table with the full verification. If you run lirpa_verification.py, you do the verification with CROWN. 
+The emphasis is on **training-time guarantees**, robustness, and worst-case behavior of neural network surrogates for power system optimization.
 
-Under verification/alpha-beta-CROWN/complete-verifier you can find an initial set up for ab-crown verification.
+---
 
-Under verification/alpha-beta-CROWN/complete-verifier/acopf you can find the vnnlib files for the ab-crown verification.
 
-Under verification/support you can find the scripts to generate the vnnlib files.
+## 📁 Repository Structure
+
+```text
+AC-OPF-verification/
+├── MinMax/                 # Min–max training and verification routines
+├── data/                   # Datasets and preprocessing scripts
+├── experiments/            # Reproducible experiment configurations
+├── models/                 # Model definitions (no trained checkpoints)
+├── scripts/                # Training, evaluation, and verification scripts
+├── docs/                   # Documentation assets (figures, logo)
+├── README.md
+└── .gitignore
+```
+
+
+## Citation
+
+If you use this code in your research, please cite:
+
+@article{giraud2025neural,
+  title={Neural Networks for AC Optimal Power Flow: Improving Worst-Case Guarantees during Training},
+  author={Giraud, Bastien and Nellikath, Rahul and Vorwerk, Johanna and Alowaifeer, Maad and Chatzivasileiadis, Spyros},
+  journal={arXiv preprint arXiv:2510.23196},
+  year={2025}
+}
+
+## AI-EFFECT
+
+This work is partially funded by AI-EFFECT, a Testing and Experimentation Facility (TEF) for AI tools in the energy sector. Interested? Find us at https://ai-effect.eu/.
+
+<img src="color-logo.png" alt="Project Logo" width="220"/>
+
+
+
+
