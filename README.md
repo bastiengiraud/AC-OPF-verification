@@ -18,29 +18,46 @@ The emphasis is on **training-time guarantees**, robustness, and worst-case beha
 
 ## 📁 Repository Structure
 
+Below is an overview of the repository, highlighting the most important folders and files.
+
 ```text
 AC-OPF-verification/
-├── MinMax/                 # Min–max training and verification routines
-├── data/                   # Datasets and preprocessing scripts
-├── experiments/            # Reproducible experiment configurations
-├── models/                 # Model definitions (no trained checkpoints)
-├── scripts/                # Training, evaluation, and verification scripts
-├── docs/                   # Documentation assets (figures, logo)
+├── MinMax/                              # Min–max training framework
+│   ├── models/
+│   │   └── best_models/                 # Trained model checkpoints (not tracked)
+│   └── scripts/
+│       └── training/
+│           └── main_ac_train.py         # Main training script
+│
+├── verification/                        # Verification routines
+│   └── lirpa_verification.py            # α-CROWN-based verification
+│
+├── docs/                                # Documentation assets (figures, logo)
+├── .gitignore
 ├── README.md
-└── .gitignore
 ```
 
 
-## Citation
+## 🚀 Getting Started
+
+To get started, please follow the instructions below.
+
+```text
+git clone https://github.com/bastiengiraud/AC-OPF-verification.git
+```
+
+
+## 📄 Citation
 
 If you use this code in your research, please cite:
-
+```bibtex
 @article{giraud2025neural,
   title={Neural Networks for AC Optimal Power Flow: Improving Worst-Case Guarantees during Training},
   author={Giraud, Bastien and Nellikath, Rahul and Vorwerk, Johanna and Alowaifeer, Maad and Chatzivasileiadis, Spyros},
   journal={arXiv preprint arXiv:2510.23196},
   year={2025}
 }
+```
 
 ## AI-EFFECT
 
